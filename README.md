@@ -45,23 +45,18 @@ Double-click `start.command`.
 
 > **First run — Gatekeeper warning**  
 > macOS will block the script with *"Apple could not verify start.command is free of malware…"*  
-> This happens because the file was downloaded from the internet. There are two ways to allow it:
+> This happens because the file was downloaded from the internet.
 >
-> **Option A — right-click (easiest):**
-> 1. Right-click (or Control-click) `start.command` → **Open**
-> 2. A new dialog appears with an **Open** button — click it
-> 3. From then on you can double-click normally
+> 1. Try to open `start.command` (it will be blocked)
+> 2. Open **System Settings → Privacy & Security**
+> 3. Scroll down to the *Security* section — you'll see a message about `start.command`
+> 4. Click **Open Anyway**
+> 5. From then on you can double-click normally
 >
-> **Option B — terminal (one command):**
+> Alternatively, run this once in the project folder and double-click works immediately:
 > ```bash
 > xattr -d com.apple.quarantine start.command
 > ```
-> Run this once in the project folder, then double-click works immediately.
->
-> **Option C — System Settings:**
-> 1. Try to open the file (it will be blocked)
-> 2. Go to **System Settings → Privacy & Security**
-> 3. Scroll down to the *Security* section and click **Open Anyway**
 
 ### Windows
 Double-click `start.bat`.
