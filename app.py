@@ -325,7 +325,9 @@ def api_tasks():
 
 @app.route("/api/tasks", methods=["POST"])
 def api_add_task():
-    data = request.json
+    data = request.get_json(silent=True) or {}
+    if not data.get("task") or not data.get("sheet"):
+        return jsonify({"error": "sheet and task required"}), 400
     try:
         ws = get_worksheet(data["sheet"])
     except KeyError:
@@ -350,7 +352,7 @@ def api_add_task():
 
 @app.route("/api/tasks/<sheet_name>/<int:row>", methods=["PUT"])
 def api_update_task(sheet_name, row):
-    data = request.json
+    data = request.get_json(silent=True) or {}
     try:
         ws = get_worksheet(sheet_name)
     except KeyError:
@@ -406,7 +408,7 @@ def api_notes():
 
 @app.route("/api/notes", methods=["POST"])
 def api_add_note():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     ws = ensure_meta_ws(NOTES_SHEET, NOTE_HEADERS)
     today = _today()
     ws.append_row([
@@ -420,7 +422,7 @@ def api_add_note():
 
 @app.route("/api/notes/<int:row>", methods=["PUT"])
 def api_update_note(row):
-    data = request.json
+    data = request.get_json(silent=True) or {}
     ws = ensure_meta_ws(NOTES_SHEET, NOTE_HEADERS)
     rows = get_notes_data()
     current = list(rows[row - 1]) if row - 1 < len(rows) else []
@@ -461,7 +463,7 @@ def api_collaborators():
 
 @app.route("/api/collaborators", methods=["POST"])
 def api_add_collaborator():
-    data = request.json
+    data = request.get_json(silent=True) or {}
     ws = ensure_meta_ws(COLLABS_SHEET, COLLAB_HEADERS)
     ws.append_row([data.get("project", ""), data.get("name", ""), data.get("role", "")])
     invalidate_cache()
@@ -1465,7 +1467,7 @@ function renderTasks() {
         ${flowerSVG(sheet, allSheetTasks, 44)}
         <span class="section-title">${escHtml(sheet)}</span>
         <span class="section-done">${doneCount}&thinsp;/&thinsp;${allSheetTasks.length}</span>
-        <button class="section-del-btn" onclick="deleteProject('${escHtml(sheet)}')" title="Delete project">🗑</button>
+        <button class="section-del-btn" onclick="deleteProject('${jsStr(sheet)}')" title="Delete project">🗑</button>
       </div>
       <table class="task-table"><tbody>${rows}</tbody></table>
       ${extras}
@@ -1555,13 +1557,13 @@ function upcomingRow(t) {
     <td style="padding-right:8px">${deadlineHtml}</td>
     <td>
       <span class="status-badge status-${escHtml(t.status)}"
-            onclick="openStatusPicker(event,'${escHtml(t.sheet)}',${t.row},'${escHtml(t.status)}')">
+            onclick="openStatusPicker(event,'${jsStr(t.sheet)}',${t.row},'${jsStr(t.status)}')">
         ${escHtml(t.status)}
       </span>
     </td>
     <td style="white-space:nowrap">
-      <button class="icon-btn" title="Edit" onclick="openEditModal('${escHtml(t.sheet)}',${t.row})">✏️</button>
-      <button class="icon-btn" title="Delete" onclick="deleteTask('${escHtml(t.sheet)}',${t.row})">🗑</button>
+      <button class="icon-btn" title="Edit" onclick="openEditModal('${jsStr(t.sheet)}',${t.row})">✏️</button>
+      <button class="icon-btn" title="Delete" onclick="deleteTask('${jsStr(t.sheet)}',${t.row})">🗑</button>
     </td>
   </tr>`;
 }
@@ -1596,13 +1598,13 @@ function taskRow(sheet, t) {
     </td>
     <td>
       <span class="status-badge status-${escHtml(t.status)}"
-            onclick="openStatusPicker(event,'${escHtml(sheet)}',${t.row},'${escHtml(t.status)}')">
+            onclick="openStatusPicker(event,'${jsStr(sheet)}',${t.row},'${jsStr(t.status)}')">
         ${escHtml(t.status)}
       </span>
     </td>
     <td style="white-space:nowrap">
-      <button class="icon-btn" title="Edit" onclick="openEditModal('${escHtml(sheet)}',${t.row})">✏️</button>
-      <button class="icon-btn" title="Delete" onclick="deleteTask('${escHtml(sheet)}',${t.row})">🗑</button>
+      <button class="icon-btn" title="Edit" onclick="openEditModal('${jsStr(sheet)}',${t.row})">✏️</button>
+      <button class="icon-btn" title="Delete" onclick="deleteTask('${jsStr(sheet)}',${t.row})">🗑</button>
     </td>
   </tr>`;
 }
@@ -2037,9 +2039,9 @@ function renderGarden() {
   const cards = allSheets.map(s => {
     const tasks = allTasks[s.name] || [];
     const done  = tasks.filter(t => t.status === 'Completed').length;
-    return `<div class="garden-card" onclick="selectSheet('${escHtml(s.name)}')">
+    return `<div class="garden-card" onclick="selectSheet('${jsStr(s.name)}')">
       <button class="garden-delete" title="Delete project"
-        onclick="event.stopPropagation();deleteProject('${escHtml(s.name)}')">×</button>
+        onclick="event.stopPropagation();deleteProject('${jsStr(s.name)}')">×</button>
       ${flowerSVG(s.name, tasks, 78)}
       <div class="garden-name">${escHtml(s.name)}</div>
       <div class="garden-progress">${done}&thinsp;/&thinsp;${tasks.length} done</div>
@@ -2106,7 +2108,7 @@ function renderStats() {
   const projectRows = Object.entries(allTasks).map(([name, tasks]) => {
     const d = tasks.filter(t => t.status==='Completed').length;
     const p = tasks.length > 0 ? Math.round(d/tasks.length*100) : 0;
-    return `<div class="proj-stat-row" onclick="selectSheet('${escHtml(name)}')">
+    return `<div class="proj-stat-row" onclick="selectSheet('${jsStr(name)}')">
       ${flowerSVG(name, tasks, 30)}
       <div class="proj-stat-name">${escHtml(name)}</div>
       <div class="proj-stat-bar"><div class="progress-bar"><div class="progress-fill" style="width:${p}%"></div></div></div>
@@ -2465,6 +2467,15 @@ function escHtml(s) {
                   .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
+// Use jsStr() — not escHtml() — when embedding a value inside a JS string literal
+// in an inline onclick attribute. HTML entities like &#39; get decoded by the HTML
+// parser *before* JS sees them, which would break out of the string literal.
+// Backslash-escaping is invisible to the HTML parser and safe for JS.
+function jsStr(s) {
+  return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'")
+                  .replace(/\n/g,'\\n').replace(/\r/g,'\\r');
+}
+
 // ── Sidebar resize ────────────────────────────────────────────────────────
 (function() {
   const sidebar = document.getElementById('sidebar');
@@ -2502,9 +2513,9 @@ init();
 
 @app.route("/")
 def index():
-    return render_template_string(HTML)
+    return HTML
 
 
 if __name__ == "__main__":
     threading.Timer(1.0, lambda: webbrowser.open("http://localhost:8080")).start()
-    app.run(port=8080, debug=False)
+    app.run(host='127.0.0.1', port=8080, debug=False)
