@@ -8,6 +8,8 @@ import webbrowser
 import json
 import os
 import re
+import pathlib
+import shutil
 from flask import Flask, jsonify, request, render_template_string
 
 try:
@@ -24,7 +26,14 @@ except (ImportError, AttributeError):
     SHEET_ID   = os.environ.get("SHEET_ID", "")
     CREDS_FILE = os.environ.get("CREDS_FILE", "service_account.json")
 TASK_HEADERS   = ["Deadline", "Task", "Hours", "Status", "Completed Date", "Assignee"]
-LOCAL_DATA_FILE = "local_data.json"
+_DATA_DIR = pathlib.Path.home() / ".research-tasks"
+_DATA_DIR.mkdir(exist_ok=True)
+LOCAL_DATA_FILE = str(_DATA_DIR / "local_data.json")
+# One-time migration: move old in-folder local_data.json to the user data dir
+_OLD_LOCAL = pathlib.Path("local_data.json")
+if _OLD_LOCAL.exists() and not pathlib.Path(LOCAL_DATA_FILE).exists():
+    shutil.move(str(_OLD_LOCAL), LOCAL_DATA_FILE)
+
 LOCAL_MODE      = not bool(SHEET_ID)   # True when no Sheet ID configured
 
 SCOPES   = ["https://www.googleapis.com/auth/spreadsheets"]
@@ -1038,6 +1047,7 @@ HTML = r"""<!DOCTYPE html>
     <button class="bulk-btn" onclick="bulkMark('In Progress')">▶ In Progress</button>
     <button class="bulk-btn" onclick="bulkMark('Not Started')">○ Not Started</button>
     <button class="bulk-btn" onclick="bulkMark('Pending')">⏸ Pending</button>
+    <button class="bulk-btn danger" onclick="bulkDelete()">🗑 Delete</button>
     <button class="bulk-btn bulk-clear" onclick="clearBulkSelect()">✕ Clear</button>
   </div>
 </div>
@@ -1072,8 +1082,8 @@ HTML = r"""<!DOCTYPE html>
       </select>
     </div>
     <div class="field">
-      <label>Assignee</label>
-      <select id="m-assignee"><option value="">— none —</option></select>
+      <label>Assignees</label>
+      <div id="m-assignee-list" style="display:flex;flex-wrap:wrap;gap:7px;padding:4px 0;min-height:28px;max-height:88px;overflow-y:auto"></div>
     </div>
     <div class="modal-actions">
       <button class="btn-cancel" onclick="closeModal()">Cancel</button>
@@ -1623,9 +1633,12 @@ function openStatusPicker(e, sheet, row, current) {
   e.stopPropagation();
   editTarget = { sheet, row };
   const picker = document.getElementById('status-picker');
-  picker.style.top = (e.clientY + 8) + 'px';
-  picker.style.left = e.clientX + 'px';
   picker.classList.add('open');
+  const ph = picker.offsetHeight;
+  const pw = picker.offsetWidth;
+  const top = (e.clientY + 8 + ph > window.innerHeight - 8) ? e.clientY - ph - 8 : e.clientY + 8;
+  picker.style.top  = Math.max(8, top) + 'px';
+  picker.style.left = Math.min(e.clientX, window.innerWidth - pw - 8) + 'px';
 }
 
 async function pickStatus(status) {
@@ -1655,12 +1668,21 @@ function populateSheetSelect(selected) {
 }
 
 function populateAssigneeSelect(project, current = '') {
-  const sel = document.getElementById('m-assignee');
+  const container = document.getElementById('m-assignee-list');
   const projectCollabs = allCollabs.filter(c => c.project === project);
-  sel.innerHTML = `<option value="">— none —</option>` +
-    projectCollabs.map(c =>
-      `<option ${c.name === current ? 'selected' : ''}>${escHtml(c.name)}</option>`
-    ).join('');
+  const currentList = current.split(',').map(s => s.trim()).filter(Boolean);
+  if (!projectCollabs.length) {
+    container.innerHTML = '<span style="font-size:12px;color:var(--text-muted)">No collaborators on this project yet</span>';
+    return;
+  }
+  container.innerHTML = projectCollabs.map(c =>
+    `<label style="display:inline-flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;padding:3px 10px;background:var(--bg);border-radius:20px;border:1.5px solid var(--border);white-space:nowrap">
+      <input type="checkbox" class="assignee-cb" value="${escHtml(c.name)}"
+        ${currentList.includes(c.name) ? 'checked' : ''}
+        style="cursor:pointer;accent-color:var(--accent)">
+      ${escHtml(c.name)}
+    </label>`
+  ).join('');
 }
 
 function openAddModal() {
@@ -1704,7 +1726,8 @@ async function saveModal() {
   const deadline = fromDateInput(document.getElementById('m-deadline').value);
   const hours    = document.getElementById('m-hours').value.trim();
   const status   = document.getElementById('m-status').value;
-  const assignee = document.getElementById('m-assignee').value;
+  const assignee = [...document.querySelectorAll('#m-assignee-list .assignee-cb:checked')]
+    .map(cb => cb.value).join(', ');
 
   if (!task) { alert('Task description is required.'); return; }
 
@@ -1933,14 +1956,14 @@ async function saveCollab() {
   ));
   closeCollabModal();
   await loadCollabs();
-  renderCollaborators();
+  renderContent();
 }
 
 async function deleteCollab(row) {
   if (!confirm('Remove this collaborator?')) return;
   await fetch(`/api/collaborators/${row}`, { method: 'DELETE' });
   await loadCollabs();
-  renderCollaborators();
+  renderContent();
 }
 
 // ── New project ───────────────────────────────────────────────────────────
@@ -2175,6 +2198,17 @@ async function bulkMark(status) {
       method: 'PUT', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ status })
     });
+  }));
+  clearBulkSelect();
+  await Promise.all([loadSheets(), loadTasks(true)]);
+}
+
+async function bulkDelete() {
+  if (!selectedTasks.size) return;
+  if (!confirm(`Permanently delete ${selectedTasks.size} task${selectedTasks.size !== 1 ? 's' : ''}?`)) return;
+  await Promise.all([...selectedTasks].map(k => {
+    const [sheet, row] = k.split('::');
+    return fetch(`/api/tasks/${encodeURIComponent(sheet)}/${row}`, { method: 'DELETE' });
   }));
   clearBulkSelect();
   await Promise.all([loadSheets(), loadTasks(true)]);
