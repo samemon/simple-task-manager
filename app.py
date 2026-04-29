@@ -477,10 +477,12 @@ def api_add_collaborator():
     names = data.get("names") or ([data.get("name")] if data.get("name") else [])
     role    = data.get("role", "")
     project = data.get("project", "")
+    existing = {r[1].strip().lower() for r in get_collabs_data()[1:] if len(r) > 1 and r[0].strip() == project}
     for name in names:
         name = name.strip()
-        if name:
+        if name and name.lower() not in existing:
             ws.append_row([project, name, role])
+            existing.add(name.lower())
     invalidate_cache()
     return jsonify({"ok": True})
 
@@ -1907,11 +1909,10 @@ function renderCollaborators() {
 
   const html = Object.entries(byProject).map(([project, collabs]) => {
     const rows = collabs.map(c => {
-      const assigned = Object.values(allTasks).flat()
-        .filter(t => t.assignee === c.name && allTasks[project]?.find(x => x.row === t.row));
+      const inAssignees = t => (t.assignee||'').split(',').map(s=>s.trim()).includes(c.name);
       const taskNames = Object.entries(allTasks)
         .filter(([s]) => s === project)
-        .flatMap(([, tasks]) => tasks.filter(t => t.assignee === c.name && t.status !== 'Completed'))
+        .flatMap(([, tasks]) => tasks.filter(t => inAssignees(t) && t.status !== 'Completed'))
         .map(t => t.task.length > 40 ? t.task.slice(0,40)+'…' : t.task);
       return `<tr class="collab-row">
         <td>
