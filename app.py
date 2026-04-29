@@ -474,7 +474,13 @@ def api_collaborators():
 def api_add_collaborator():
     data = request.get_json(silent=True) or {}
     ws = ensure_meta_ws(COLLABS_SHEET, COLLAB_HEADERS)
-    ws.append_row([data.get("project", ""), data.get("name", ""), data.get("role", "")])
+    names = data.get("names") or ([data.get("name")] if data.get("name") else [])
+    role    = data.get("role", "")
+    project = data.get("project", "")
+    for name in names:
+        name = name.strip()
+        if name:
+            ws.append_row([project, name, role])
     invalidate_cache()
     return jsonify({"ok": True})
 
@@ -1948,12 +1954,10 @@ async function saveCollab() {
   const names   = document.getElementById('c-name').value.split(',').map(n => n.trim()).filter(Boolean);
   const role    = document.getElementById('c-role').value.trim();
   if (!names.length) { alert('Name is required.'); return; }
-  await Promise.all(names.map(name =>
-    fetch('/api/collaborators', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ project, name, role })
-    })
-  ));
+  await fetch('/api/collaborators', {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ project, names, role })
+  });
   closeCollabModal();
   await loadCollabs();
   renderContent();
