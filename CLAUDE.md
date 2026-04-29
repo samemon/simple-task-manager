@@ -179,6 +179,79 @@ Five CSS variable sets in `THEMES` object. `applyTheme(name)` writes all `--` va
 
 ---
 
+## Implemented features (complete list)
+
+- Project management: create, delete, switch between projects
+- Tasks: add, edit, delete, inline status cycle, date picker deadline
+- Bulk status change: checkbox-select multiple tasks, apply status to all
+- Search: real-time filter across all projects
+- Export CSV: current project or all projects
+- Upcoming view: tasks grouped Overdue / Today / This Week / This Month / Later
+- Stats view: overall %, hours logged, by-status breakdown, per-project bars
+- Notes: add, edit, delete; importance + purpose tags; color swatches; sorted newest-first
+- Collaborators: add (comma-separated for bulk), delete, assignable to tasks
+- Flower progress visualization: per-project SVG flower, one petal per task
+- Five color themes (Classic, Ocean, Sage, Sunset, Lavender), persisted in localStorage
+- Resizable sidebar, width persisted in localStorage
+- Local mode: full offline operation with `local_data.json`
+- Sync button: force re-fetch from Google Sheets
+- Procrastinate tab: snake game with 1–5 min timer, deep quotes panel
+
+## Intentionally deferred (do not implement without discussion)
+
+- **Subtasks** — requires schema change (new sheet structure or encoding)
+- **Recurring tasks** — requires schema change
+- These were explicitly ruled out to keep the data model simple
+
+## Data conventions
+
+### Date format
+Dates are stored and displayed as `"1 May 2026"` (human-readable).  
+The `<input type="date">` uses ISO format `"2026-05-01"`.  
+Two helpers handle the round-trip:
+- `toDateInputValue(str)` — human string → ISO for the date input
+- `fromDateInput(val)` — ISO → human string for storage
+
+Always use these helpers; never store ISO dates directly.
+
+### Status values
+Exactly four, case-sensitive:
+```
+"Not Started" | "In Progress" | "Pending" | "Completed"
+```
+`ACTIVE_STATUSES = {"Not Started", "In Progress", "Pending"}` — used for sidebar counts.
+
+### Note importance / purpose
+Importance: `"High" | "Medium" | "Low"`  
+Purpose: `"Design" | "Writing" | "Analysis" | "Planning" | "Other"`  
+These map directly to CSS classes (`imp-High`, `pur-Design`, etc.) — adding new values requires adding CSS.
+
+## Google Sheets specifics
+
+### Rate limiting (429)
+`_fetch_all()` retries up to 5 times with exponential backoff on 429 errors. The `float('inf')` TTL cache means normal usage never hits Sheets twice — only `POST /api/sync` triggers a full re-read. If you add new read paths, route them through the cache, not direct Sheets calls.
+
+### Sheet tab names
+`_notes` and `_collabs` are reserved meta-tabs. `META_SHEETS` set prevents them from appearing as projects. Any new meta-tab must be added to `META_SHEETS`.
+
+### gspread availability
+`_GSPREAD_AVAILABLE` flag — gspread is optional. The app imports it in a try/except. In local mode gspread is never called. Do not call any gspread API outside of the `if not LOCAL_MODE` paths.
+
+## localStorage keys
+
+| Key | Value | Set by |
+|-----|-------|--------|
+| `theme` | `"classic"` \| `"ocean"` \| `"sage"` \| `"sunset"` \| `"lavender"` | `applyTheme()` |
+| `sidebarWidth` | integer px | sidebar resize handler |
+
+## CSS architecture
+
+All colours go through CSS variables on `:root`. Never hardcode a colour in CSS.  
+Adding a new theme means adding an entry to the `THEMES` JS object — the CSS already uses the variables.
+
+Status badge classes follow the pattern `status-Not\ Started`, `status-In\ Progress`, etc. (spaces escaped in CSS).  
+Note badge classes: `imp-High`, `imp-Medium`, `imp-Low`, `pur-Design`, etc.
+
 ## What NOT to do
 
 - Do not read from Sheets inside a GET route that runs on every navigation — use the cache
