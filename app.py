@@ -654,10 +654,12 @@ HTML = r"""<!DOCTYPE html>
   .filter-btn[data-s="Pending"]     { border-color: var(--pending-dot); color: var(--pending-text); }
   .filter-btn[data-s="In Progress"] { border-color: var(--inprogress-dot); color: var(--inprogress-text); }
   .filter-btn[data-s="Not Started"] { border-color: var(--notstarted-dot); color: var(--notstarted-text); }
+  .filter-btn[data-s="Completed"]   { border-color: var(--completed-dot); color: var(--completed-text); }
   .filter-btn.active[data-s="all"]         { background: #CBD5E0; color: #2D3748; }
   .filter-btn.active[data-s="Pending"]     { background: var(--pending-bg); }
   .filter-btn.active[data-s="In Progress"] { background: var(--inprogress-bg); }
   .filter-btn.active[data-s="Not Started"] { background: var(--notstarted-bg); }
+  .filter-btn.active[data-s="Completed"]   { background: var(--completed-bg); }
 
   #content { flex: 1; overflow-y: auto; padding: 24px 28px; }
 
@@ -1042,6 +1044,7 @@ HTML = r"""<!DOCTYPE html>
       <button class="filter-btn" data-s="Pending" onclick="setFilter('Pending')">Pending</button>
       <button class="filter-btn" data-s="In Progress" onclick="setFilter('In Progress')">In Progress</button>
       <button class="filter-btn" data-s="Not Started" onclick="setFilter('Not Started')">Not Started</button>
+      <button class="filter-btn" data-s="Completed" onclick="setFilter('Completed')">Completed</button>
     </div>
     <input id="search-input" type="search" placeholder="🔍 Search tasks…" oninput="onSearch()" style="display:none">
     <button id="export-btn" onclick="exportCSV()" style="display:none">⬇ Export</button>
