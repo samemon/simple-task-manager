@@ -41,8 +41,27 @@ A lightweight browser-based task manager built for researchers. Backed by Google
 ## Quick start
 
 ### macOS
-Double-click `start.command`.  
-First run: right-click → **Open** to bypass Gatekeeper, then double-click from then on.
+Double-click `start.command`.
+
+> **First run — Gatekeeper warning**  
+> macOS will block the script with *"Apple could not verify start.command is free of malware…"*  
+> This happens because the file was downloaded from the internet. There are two ways to allow it:
+>
+> **Option A — right-click (easiest):**
+> 1. Right-click (or Control-click) `start.command` → **Open**
+> 2. A new dialog appears with an **Open** button — click it
+> 3. From then on you can double-click normally
+>
+> **Option B — terminal (one command):**
+> ```bash
+> xattr -d com.apple.quarantine start.command
+> ```
+> Run this once in the project folder, then double-click works immediately.
+>
+> **Option C — System Settings:**
+> 1. Try to open the file (it will be blocked)
+> 2. Go to **System Settings → Privacy & Security**
+> 3. Scroll down to the *Security* section and click **Open Anyway**
 
 ### Windows
 Double-click `start.bat`.
