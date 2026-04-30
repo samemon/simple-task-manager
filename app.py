@@ -620,14 +620,14 @@ HTML = r"""<!DOCTYPE html>
   .sheet-item .badge { font-size: 10px; background: rgba(255,255,255,0.15);
                         color: #fff; padding: 1px 6px; border-radius: 10px; }
   .sidebar-sep { height: 1px; background: rgba(255,255,255,0.06); margin: 8px 16px; }
-  #show-all, #upcoming-btn, #notes-btn, #collabs-btn, #stats-btn, #procrastinate-btn {
+  #show-all, #upcoming-btn, #notes-btn, #collabs-btn, #stats-btn, #procrastinate-btn, #gardone-btn {
     padding: 9px 20px; cursor: pointer; font-size: 13px; color: var(--sidebar-text);
     margin: 1px 8px; border-radius: 6px; display: flex; align-items: center; gap: 8px;
   }
-  #show-all:hover, #upcoming-btn:hover, #notes-btn:hover, #collabs-btn:hover, #stats-btn:hover, #procrastinate-btn:hover {
+  #show-all:hover, #upcoming-btn:hover, #notes-btn:hover, #collabs-btn:hover, #stats-btn:hover, #procrastinate-btn:hover, #gardone-btn:hover {
     background: var(--sidebar-hover); color: #fff;
   }
-  #show-all.active, #upcoming-btn.active, #notes-btn.active, #collabs-btn.active, #stats-btn.active, #procrastinate-btn.active {
+  #show-all.active, #upcoming-btn.active, #notes-btn.active, #collabs-btn.active, #stats-btn.active, #procrastinate-btn.active, #gardone-btn.active {
     background: rgba(90,103,216,0.35); color: var(--sidebar-active); font-weight: 600;
   }
   .deadline-pill {
@@ -955,6 +955,124 @@ HTML = r"""<!DOCTYPE html>
   }
   #sidebar-resize:hover, #sidebar-resize.dragging { background: var(--accent-light); }
 
+  /* ── GarDone view ── */
+  .gardone-wrap {
+    padding: 0 0 60px;
+  }
+  .gardone-header {
+    text-align: center;
+    padding: 36px 24px 28px;
+    border-bottom: 1px solid #C5B99A;
+    margin-bottom: 36px;
+    background: linear-gradient(to bottom, #F5EFE3, #EDE8DF);
+    position: relative;
+  }
+  .gardone-title {
+    font-family: 'Georgia', 'Times New Roman', serif;
+    font-size: 38px;
+    font-weight: 600;
+    color: #2C1F14;
+    letter-spacing: -0.01em;
+    line-height: 1;
+    margin-bottom: 6px;
+  }
+  .gardone-subtitle {
+    font-family: 'Georgia', serif;
+    font-size: 14px;
+    font-style: italic;
+    color: #7A6652;
+    margin-bottom: 14px;
+  }
+  .gardone-stats-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #5C4A35;
+    background: rgba(255,255,255,0.55);
+    border: 1px solid #C5B99A;
+    border-radius: 40px;
+    padding: 5px 18px;
+    font-family: 'Georgia', serif;
+  }
+  .gardone-pill-sep { color: #B8A990; }
+  .gardone-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(480px, 1fr));
+    gap: 24px;
+    max-width: 1140px;
+    margin: 0 auto;
+    padding: 0 28px;
+  }
+  .gardone-specimen {
+    position: relative;
+    background: #FAF6EE;
+    border: 1px solid #D4C5A9;
+    border-radius: 4px;
+    padding: 26px 24px 20px;
+    box-shadow: 2px 3px 10px rgba(100,80,50,0.10);
+    transition: box-shadow 0.18s ease, transform 0.18s ease;
+  }
+  .gardone-specimen:hover {
+    box-shadow: 4px 6px 22px rgba(100,80,50,0.17);
+    transform: translateY(-2px);
+  }
+  .gardone-specimen::before {
+    content: '';
+    position: absolute; top: 9px; left: 50%; transform: translateX(-50%);
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #C5B99A;
+    box-shadow: inset 0 1px 2px rgba(0,0,0,0.18);
+  }
+  .gardone-inner { display: flex; gap: 20px; align-items: flex-start; }
+  .gardone-flower-col {
+    flex-shrink: 0;
+    display: flex; flex-direction: column; align-items: center; gap: 5px;
+  }
+  .gardone-flower-ring {
+    padding: 9px; border: 1px solid; border-radius: 50%;
+    background: rgba(255,255,255,0.6);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .gardone-notes-col { flex: 1; min-width: 0; }
+  .gardone-spec-header {
+    display: flex; align-items: baseline;
+    justify-content: space-between; gap: 10px;
+    padding-bottom: 8px; border-bottom: 1px solid;
+    margin-bottom: 12px;
+  }
+  .gardone-spec-name {
+    font-family: 'Georgia', serif;
+    font-size: 18px; font-weight: 600; color: #2C1F14; flex: 1;
+  }
+  .gardone-spec-stats {
+    font-family: 'Georgia', serif;
+    font-size: 11px; font-style: italic; color: #8C7A65; white-space: nowrap;
+  }
+  .gardone-task-list { list-style: none; display: flex; flex-direction: column; gap: 5px; }
+  .gardone-task-entry {
+    display: flex; align-items: baseline; gap: 6px;
+    font-family: 'Georgia', serif; font-size: 13.5px; line-height: 1.45; color: #3D2B1F;
+    padding-bottom: 5px; border-bottom: 1px solid rgba(180,160,120,0.18);
+  }
+  .gardone-task-entry:last-child { border-bottom: none; padding-bottom: 0; }
+  .gardone-tick { font-size: 10px; flex-shrink: 0; margin-top: 2px; }
+  .gardone-task-name { flex: 1; }
+  .gardone-task-date {
+    font-size: 11px; font-style: italic; color: #A08060; flex-shrink: 0; white-space: nowrap;
+  }
+  .gardone-stamp {
+    position: absolute; bottom: 12px; right: 14px;
+    font-size: 9px; font-weight: 600; letter-spacing: 0.2em;
+    border: 1px solid; border-radius: 2px; padding: 2px 5px;
+    opacity: 0.22; transform: rotate(-2deg);
+  }
+  .gardone-empty {
+    text-align: center; font-family: 'Georgia', serif;
+    font-style: italic; font-size: 17px; color: #A08060;
+    padding: 60px 0;
+  }
+
   /* ── Procrastination view ── */
   .procrastinate-layout { display: flex; gap: 28px; flex-wrap: wrap; align-items: flex-start; }
   .snake-section { display: flex; flex-direction: column; align-items: center; gap: 10px; flex-shrink: 0; }
@@ -1044,6 +1162,7 @@ HTML = r"""<!DOCTYPE html>
   <div id="notes-btn" onclick="selectView('notes')">📝 Notes</div>
   <div id="collabs-btn" onclick="selectView('collaborators')">👥 Collaborators</div>
   <div id="stats-btn"         onclick="selectView('stats')">📊 Stats</div>
+  <div id="gardone-btn"       onclick="selectView('gardone')">🌸 GarDone</div>
   <div id="procrastinate-btn" onclick="selectView('procrastinate')">🐍 Procrastinate</div>
   <div class="sidebar-sep"></div>
   <div id="sheet-list"></div>
@@ -1235,7 +1354,7 @@ let modalMode    = 'add';
 let noteEditRow  = null;
 let selectedNoteColor = '#FFF9C4';
 let searchQuery = '';
-const selectedTasks = new Set();  // "sheet::row"
+const selectedTasks  = new Set();  // "sheet::row"
 const NOTE_COLORS = ['#FFF9C4','#C8E6C9','#BBDEFB','#F8BBD0','#E1BEE7','#FFE0B2'];
 
 const THEMES = {
@@ -1312,7 +1431,7 @@ async function syncAll() {
 // ── Sidebar ───────────────────────────────────────────────────────────────
 
 function setSidebarActive(id) {
-  ['show-all','upcoming-btn','notes-btn','collabs-btn','stats-btn','procrastinate-btn'].forEach(i =>
+  ['show-all','upcoming-btn','notes-btn','collabs-btn','stats-btn','gardone-btn','procrastinate-btn'].forEach(i =>
     document.getElementById(i).className = (i === id ? 'active' : ''));
   document.querySelectorAll('.sheet-item').forEach(el => el.classList.remove('active'));
 }
@@ -1325,7 +1444,7 @@ function updateTopbar() {
   if (searchEl) searchEl.style.display = viewMode === 'tasks' ? '' : 'none';
   if (exportEl) exportEl.style.display = viewMode === 'tasks' ? '' : 'none';
   const btn = document.getElementById('add-btn');
-  if (viewMode === 'procrastinate' || viewMode === 'stats') {
+  if (viewMode === 'procrastinate' || viewMode === 'stats' || viewMode === 'gardone') {
     btn.style.display = 'none';
   } else {
     btn.style.display = '';
@@ -1390,8 +1509,8 @@ function selectView(mode) {
   viewMode = mode;
   activeSheet = null;
   document.getElementById('topbar-title').textContent =
-    { notes:'Notes', collaborators:'Collaborators', procrastinate:'🐍 Procrastinate', stats:'📊 Stats' }[mode] || mode;
-  const sid = { notes:'notes-btn', collaborators:'collabs-btn', procrastinate:'procrastinate-btn', stats:'stats-btn' };
+    { notes:'Notes', collaborators:'Collaborators', procrastinate:'🐍 Procrastinate', stats:'📊 Stats', gardone:'🌸 GarDone' }[mode] || mode;
+  const sid = { notes:'notes-btn', collaborators:'collabs-btn', procrastinate:'procrastinate-btn', stats:'stats-btn', gardone:'gardone-btn' };
   setSidebarActive(sid[mode] || null);
   updateTopbar();
   renderContent();
@@ -1404,6 +1523,7 @@ function renderContent() {
   else if (viewMode === 'collaborators') renderCollaborators();
   else if (viewMode === 'procrastinate') renderProcrastinate();
   else if (viewMode === 'stats')         renderStats();
+  else if (viewMode === 'gardone')       renderGarDone();
   else                                   renderTasks();
 }
 
@@ -2170,6 +2290,79 @@ function renderStats() {
     <div class="stats-grid">${statusCards}</div>
     ${projectRows ? `<div class="section-title" style="margin:24px 0 12px">By Project</div>
       <div style="background:var(--surface);border-radius:10px;padding:8px 16px;box-shadow:0 1px 4px rgba(0,0,0,0.07)">${projectRows}</div>` : ''}`;
+}
+
+// ── GarDone ───────────────────────────────────────────────────────────────
+
+function renderGarDone() {
+  const projects = Object.keys(allTasks).sort();
+  let totalDone = 0, totalHours = 0;
+  const specimenCards = [];
+
+  for (const project of projects) {
+    const tasks   = allTasks[project] || [];
+    const done    = tasks.filter(t => t.status === 'Completed');
+    if (!done.length) continue;
+    totalDone += done.length;
+    const hours = done.reduce((s, t) => s + (parseFloat(t.hours) || 0), 0);
+    totalHours += hours;
+
+    const fd      = FLOWER_DEFS[hashStr(project) % FLOWER_DEFS.length];
+    const accent  = fd.stroke;
+    const fill    = fd.fill;
+    const flower  = flowerSVG(project, done, 130);
+
+    const taskRows = done.map(t => {
+      const date = t.completed_date
+        ? `<span class="gardone-task-date">${escHtml(t.completed_date)}</span>` : '';
+      return `<li class="gardone-task-entry">
+        <span class="gardone-tick" style="color:${accent}">✓</span>
+        <span class="gardone-task-name">${escHtml(t.task)}</span>
+        ${date}
+      </li>`;
+    }).join('');
+
+    const statsStr = `${done.length} of ${tasks.length} done${hours ? '  ·  ' + hours.toFixed(0) + 'h' : ''}`;
+
+    specimenCards.push(`
+      <div class="gardone-specimen">
+        <div class="gardone-inner">
+          <div class="gardone-flower-col">
+            <div class="gardone-flower-ring" style="border-color:${fill}">${flower}</div>
+          </div>
+          <div class="gardone-notes-col">
+            <div class="gardone-spec-header" style="border-bottom-color:${accent}">
+              <span class="gardone-spec-name">${escHtml(project)}</span>
+              <span class="gardone-spec-stats">${escHtml(statsStr)}</span>
+            </div>
+            <ul class="gardone-task-list">${taskRows}</ul>
+          </div>
+        </div>
+        <div class="gardone-stamp" style="color:${accent};border-color:${accent}">DONE</div>
+      </div>`);
+  }
+
+  const hoursLine = totalHours
+    ? `<span class="gardone-pill-sep">·</span><span>${totalHours.toFixed(0)}h logged</span>` : '';
+  const today = new Date().toLocaleDateString('en-GB', {day:'numeric', month:'long', year:'numeric'});
+
+  document.getElementById('content').innerHTML = `
+    <div class="gardone-wrap">
+      <div class="gardone-header">
+        <div class="gardone-title">🌸 GarDone</div>
+        <div class="gardone-subtitle">A record of things completed</div>
+        <div class="gardone-stats-pill">
+          <span>${totalDone} tasks</span>
+          ${hoursLine}
+          <span class="gardone-pill-sep">·</span>
+          <span>${specimenCards.length} projects</span>
+        </div>
+        <div style="font-size:12px;color:#A08060;margin-top:12px;font-style:italic">${today}</div>
+      </div>
+      ${specimenCards.length
+        ? `<div class="gardone-grid">${specimenCards.join('')}</div>`
+        : `<div class="gardone-empty">No completed tasks yet — finish something first 🌱</div>`}
+    </div>`;
 }
 
 // ── Search ────────────────────────────────────────────────────────────────

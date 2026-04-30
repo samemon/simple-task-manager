@@ -29,6 +29,7 @@ Backed by Google Sheets (or runs fully offline) — track projects, deadlines, n
 - **Bulk status change** — select multiple tasks and mark them all at once
 - **Export CSV** — download any project's tasks as a spreadsheet
 - **Themes** — five pastel color themes (Classic, Ocean, Sage, Sunset, Lavender)
+- **GarDone** — a botanical specimen view of all completed tasks; each project rendered as a pressed flower with its task list, parchment-style
 - **Procrastinate tab** — snake game with a timer and deep quotes for earned breaks
 
 ![Procrastinate tab with snake game and deep quotes](demo/procrastinate.png)
