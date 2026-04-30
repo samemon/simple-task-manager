@@ -561,7 +561,7 @@ HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Research Tasks</title>
+<title>KaamKaaj</title>
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -605,9 +605,11 @@ HTML = r"""<!DOCTYPE html>
     background: var(--sidebar-bg); display: flex; flex-direction: column;
     overflow-y: auto; position: relative;
   }
-  #sidebar-header { padding: 24px 20px 12px; }
-  #sidebar-header h1 { font-size: 15px; font-weight: 700; color: #FFF; }
-  #sidebar-header p { font-size: 11px; color: var(--sidebar-text); margin-top: 2px; }
+  #sidebar-header { padding: 18px 20px 12px; }
+  #sidebar-logo { display: flex; align-items: center; gap: 10px; margin-bottom: 4px; }
+  #sidebar-logo svg { flex-shrink: 0; }
+  #sidebar-header h1 { font-size: 16px; font-weight: 800; color: #FFF; letter-spacing: 0.2px; }
+  #sidebar-header p { font-size: 11px; color: var(--sidebar-text); margin-top: 1px; }
   .sheet-item {
     padding: 9px 20px; cursor: pointer; border-radius: 6px; margin: 1px 8px;
     display: flex; align-items: center; justify-content: space-between;
@@ -1008,7 +1010,22 @@ HTML = r"""<!DOCTYPE html>
 
 <div id="sidebar">
   <div id="sidebar-header">
-    <h1>Research Tasks</h1>
+    <div id="sidebar-logo">
+      <svg width="34" height="34" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+        <g transform="translate(60,60)">
+          <g transform="rotate(-90)"><ellipse cx="0" cy="-34" rx="10.5" ry="18.5" fill="#FBBF24" stroke="#F59E0B" stroke-width="0.8"/></g>
+          <g transform="rotate(-45)"><ellipse cx="0" cy="-34" rx="10.5" ry="18.5" fill="#FBBF24" stroke="#F59E0B" stroke-width="0.8"/></g>
+          <g transform="rotate(0)"><ellipse cx="0" cy="-34" rx="10.5" ry="18.5" fill="#FBBF24" stroke="#F59E0B" stroke-width="0.8"/></g>
+          <g transform="rotate(45)"><ellipse cx="0" cy="-34" rx="10.5" ry="18.5" fill="#FBBF24" stroke="#F59E0B" stroke-width="0.8"/></g>
+          <g transform="rotate(90)"><ellipse cx="0" cy="-34" rx="10.5" ry="18.5" fill="#FBBF24" stroke="#F59E0B" stroke-width="0.8"/></g>
+          <g transform="rotate(135)"><ellipse cx="0" cy="-34" rx="10.5" ry="18.5" fill="#FBBF24" stroke="#F59E0B" stroke-width="0.8"/></g>
+          <g transform="rotate(180)"><ellipse cx="0" cy="-34" rx="10.5" ry="18.5" fill="#FBBF24" stroke="#F59E0B" stroke-width="0.8"/></g>
+          <g transform="rotate(225)"><ellipse cx="0" cy="-34" rx="10.5" ry="18.5" fill="#FBBF24" stroke="#F59E0B" stroke-width="0.8"/></g>
+        </g>
+        <circle cx="60" cy="60" r="13" fill="#D97706" stroke="rgba(255,255,255,0.5)" stroke-width="1.5"/>
+      </svg>
+      <h1>KaamKaaj</h1>
+    </div>
     <p id="total-count">Loading…</p>
   </div>
   <div id="local-mode-badge" style="display:none;margin:4px 10px 0;padding:5px 10px;background:rgba(104,211,145,0.15);border-radius:6px;font-size:11px;color:#68D391;font-weight:600;">
