@@ -1,6 +1,7 @@
-# Research Task Manager
+<h1><img src="demo/logo.svg" width="40" height="40" align="absmiddle"> KaamKaaj</h1>
 
-A lightweight browser-based task manager built for researchers. Backed by Google Sheets (or runs fully offline) — track projects, deadlines, notes, and collaborators from a clean local web UI.
+**A simple desktop task manager for researchers.**  
+Backed by Google Sheets (or runs fully offline) — track projects, deadlines, notes, and collaborators from a clean local web UI.
 
 ![All Projects view showing flower progress indicators](demo/main.png)
 

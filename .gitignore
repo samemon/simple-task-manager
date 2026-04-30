@@ -1,6 +1,7 @@
 config.py
 service_account.json
 local_data.json
+HANDOFF.md
 __pycache__/
 *.pyc
 *.pyo
