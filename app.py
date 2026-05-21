@@ -611,14 +611,21 @@ HTML = r"""<!DOCTYPE html>
   #sidebar-header h1 { font-size: 16px; font-weight: 800; color: #FFF; letter-spacing: 0.2px; }
   #sidebar-header p { font-size: 11px; color: var(--sidebar-text); margin-top: 1px; }
   .sheet-item {
-    padding: 9px 20px; cursor: pointer; border-radius: 6px; margin: 1px 8px;
-    display: flex; align-items: center; justify-content: space-between;
+    padding: 9px 12px 9px 8px; cursor: pointer; border-radius: 6px; margin: 1px 8px;
+    display: flex; align-items: center; gap: 4px;
     color: var(--sidebar-text); font-size: 13px; transition: background 0.15s;
   }
   .sheet-item:hover { background: var(--sidebar-hover); color: #fff; }
   .sheet-item.active { background: rgba(90,103,216,0.35); color: var(--sidebar-active); font-weight: 600; }
   .sheet-item .badge { font-size: 10px; background: rgba(255,255,255,0.15);
-                        color: #fff; padding: 1px 6px; border-radius: 10px; }
+                        color: #fff; padding: 1px 6px; border-radius: 10px; margin-left: auto; }
+  .sheet-item .drag-handle {
+    font-size: 13px; opacity: 0; cursor: grab; padding: 0 3px; flex-shrink: 0;
+    transition: opacity 0.15s; user-select: none; line-height: 1;
+  }
+  .sheet-item:hover .drag-handle { opacity: 0.45; }
+  .sheet-item.dragging { opacity: 0.4; }
+  .sheet-item.drag-over { outline: 1px dashed rgba(255,255,255,0.35); border-radius: 6px; }
   .sidebar-sep { height: 1px; background: rgba(255,255,255,0.06); margin: 8px 16px; }
   #show-all, #upcoming-btn, #notes-btn, #collabs-btn, #stats-btn, #procrastinate-btn, #gardone-btn {
     padding: 9px 20px; cursor: pointer; font-size: 13px; color: var(--sidebar-text);
@@ -645,9 +652,19 @@ HTML = r"""<!DOCTYPE html>
 
   #topbar {
     background: var(--surface); border-bottom: 1px solid var(--border);
-    padding: 14px 28px; display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+    padding: 10px 28px 0; display: flex; align-items: center;
+    gap: 10px; flex-shrink: 0; flex-wrap: wrap;
   }
-  #topbar h2 { font-size: 16px; font-weight: 700; flex: 1; }
+  #topbar h2 { font-size: 16px; font-weight: 700; flex: 1; min-width: 0;
+               white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+               padding: 4px 0; }
+  #topbar-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; padding: 4px 0; }
+  #filter-area {
+    order: 10; width: 100%;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+    padding: 8px 0 10px;
+    border-top: 1px solid var(--border);
+  }
   .filter-btn {
     padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600;
     cursor: pointer; border: 1.5px solid transparent; transition: all 0.15s; background: none;
@@ -762,8 +779,42 @@ HTML = r"""<!DOCTYPE html>
   .pur-Analysis { background: #FEEBC8; color: #7B341E; }
   .pur-Planning { background: #C6F6D5; color: #22543D; }
   .pur-Other    { background: #EDF2F7; color: #4A5568; }
+  .note-title { font-size: 14px; font-weight: 700; color: var(--text);
+                 margin-bottom: 5px; word-break: break-word; }
+  .note-body  { font-size: 13px; color: var(--text); line-height: 1.55;
+                margin-bottom: 10px; word-break: break-word; }
+  .note-body ul, .note-body ol { padding-left: 22px; margin: 4px 0; }
+  #n-editor ul, #n-editor ol  { padding-left: 22px; margin: 4px 0; }
+  .note-body p  { margin: 0 0 4px; }
+  /* legacy plain-text notes */
   .note-text { font-size: 13px; color: var(--text); line-height: 1.55;
                 margin-bottom: 10px; white-space: pre-wrap; word-break: break-word; }
+  /* editor inside modal */
+  #note-modal .modal { width: 540px; }
+  .note-editor-toolbar {
+    display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+    padding: 6px 8px; background: var(--bg);
+    border: 1px solid var(--border); border-bottom: none; border-radius: 8px 8px 0 0;
+  }
+  .net-btn {
+    padding: 3px 8px; border-radius: 4px; border: 1px solid var(--border);
+    background: var(--surface); cursor: pointer; font-size: 12px; font-weight: 600;
+    color: var(--text); line-height: 1.4; transition: background 0.1s; min-width: 26px;
+  }
+  .net-btn:hover { background: var(--border); }
+  .net-sep { width: 1px; height: 16px; background: var(--border); margin: 0 3px; flex-shrink: 0; }
+  .net-select {
+    padding: 3px 5px; border-radius: 4px; border: 1px solid var(--border);
+    background: var(--surface); font-size: 12px; color: var(--text); cursor: pointer;
+  }
+  #n-editor {
+    min-height: 120px; max-height: 260px; overflow-y: auto;
+    border: 1px solid var(--border); border-radius: 0 0 8px 8px;
+    padding: 10px 12px; font-size: 14px; line-height: 1.6;
+    color: var(--text); background: var(--surface); outline: none;
+  }
+  #n-editor:focus { border-color: var(--accent); }
+  #n-editor:empty::before { content: attr(data-placeholder); color: var(--text-muted); pointer-events: none; }
   .note-footer { display: flex; align-items: center; justify-content: space-between;
                   gap: 8px; margin-top: 8px; }
   .note-dates { font-size: 11px; color: var(--text-muted); }
@@ -846,6 +897,39 @@ HTML = r"""<!DOCTYPE html>
     transition: background 0.15s;
   }
   #new-project-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+
+  /* Demo mode toggle */
+  .demo-toggle-wrap {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 10px; padding: 6px 4px 0;
+    border-top: 1px solid rgba(255,255,255,0.06);
+  }
+  .demo-toggle-label { font-size: 11px; color: rgba(255,255,255,0.4); letter-spacing: 0.04em; }
+  .demo-switch { position: relative; display: inline-block; width: 32px; height: 18px; flex-shrink: 0; }
+  .demo-switch input { opacity: 0; width: 0; height: 0; }
+  .demo-slider {
+    position: absolute; cursor: pointer; inset: 0;
+    background: rgba(255,255,255,0.12); border-radius: 18px;
+    transition: background 0.2s;
+  }
+  .demo-slider::before {
+    content: ''; position: absolute;
+    height: 12px; width: 12px; left: 3px; bottom: 3px;
+    background: rgba(255,255,255,0.5); border-radius: 50%;
+    transition: transform 0.2s;
+  }
+  .demo-switch input:checked + .demo-slider { background: #F59E0B; }
+  .demo-switch input:checked + .demo-slider::before {
+    transform: translateX(14px); background: #fff;
+  }
+
+  /* Demo banner */
+  #demo-banner {
+    display: none; align-items: center; gap: 6px;
+    background: #F59E0B; color: #1a1100;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.08em;
+    padding: 3px 10px; border-radius: 20px; white-space: nowrap;
+  }
 
   /* Status cycle dropdown */
   .status-select {
@@ -1168,6 +1252,13 @@ HTML = r"""<!DOCTYPE html>
   <div id="sheet-list"></div>
   <div id="sidebar-footer">
     <button id="new-project-btn" onclick="openNewProjectModal()">+ New Project</button>
+    <div class="demo-toggle-wrap">
+      <span class="demo-toggle-label">Demo Mode</span>
+      <label class="demo-switch">
+        <input type="checkbox" id="demo-toggle-cb" onchange="toggleDemoMode(this.checked)">
+        <span class="demo-slider"></span>
+      </label>
+    </div>
   </div>
   <div id="sidebar-resize"></div>
 </div>
@@ -1175,17 +1266,20 @@ HTML = r"""<!DOCTYPE html>
 <div id="main">
   <div id="topbar">
     <h2 id="topbar-title">All Projects</h2>
+    <div id="topbar-right">
+      <div id="demo-banner">📸 DEMO</div>
+      <button id="refresh-btn" onclick="syncAll()">↻ Sync</button>
+      <button id="add-btn" onclick="openAddModal()">+ Add Task</button>
+    </div>
     <div id="filter-area">
       <button class="filter-btn active" data-s="all" onclick="setFilter('all')">All</button>
       <button class="filter-btn" data-s="Pending" onclick="setFilter('Pending')">Pending</button>
       <button class="filter-btn" data-s="In Progress" onclick="setFilter('In Progress')">In Progress</button>
       <button class="filter-btn" data-s="Not Started" onclick="setFilter('Not Started')">Not Started</button>
       <button class="filter-btn" data-s="Completed" onclick="setFilter('Completed')">Completed</button>
+      <input id="search-input" type="search" placeholder="🔍 Search tasks…" oninput="onSearch()" style="display:none;margin-left:auto">
+      <button id="export-btn" onclick="exportCSV()" style="display:none">⬇ Export</button>
     </div>
-    <input id="search-input" type="search" placeholder="🔍 Search tasks…" oninput="onSearch()" style="display:none">
-    <button id="export-btn" onclick="exportCSV()" style="display:none">⬇ Export</button>
-    <button id="refresh-btn" onclick="syncAll()">↻ Sync</button>
-    <button id="add-btn" onclick="openAddModal()">+ Add Task</button>
   </div>
   <div id="content"><div class="spinner">Loading tasks…</div></div>
   <div id="bulk-bar">
@@ -1248,8 +1342,35 @@ HTML = r"""<!DOCTYPE html>
       <select id="n-project"></select>
     </div>
     <div class="field">
+      <label>Title <span style="font-weight:400;text-transform:none">(optional)</span></label>
+      <input id="n-title" type="text" placeholder="Note title…">
+    </div>
+    <div class="field">
       <label>Note</label>
-      <textarea id="n-text" rows="4" placeholder="Write your note…"></textarea>
+      <div class="note-editor-toolbar">
+        <button type="button" class="net-btn" onmousedown="event.preventDefault();execFmt('bold')" title="Bold"><b>B</b></button>
+        <button type="button" class="net-btn" onmousedown="event.preventDefault();execFmt('italic')" title="Italic"><i>I</i></button>
+        <button type="button" class="net-btn" onmousedown="event.preventDefault();execFmt('underline')" title="Underline"><u>U</u></button>
+        <div class="net-sep"></div>
+        <button type="button" class="net-btn" onmousedown="event.preventDefault();execFmt('insertUnorderedList')" title="Bullet list">• List</button>
+        <button type="button" class="net-btn" onmousedown="event.preventDefault();execFmt('insertOrderedList')" title="Numbered list">1. List</button>
+        <div class="net-sep"></div>
+        <select id="n-font" class="net-select" onchange="applyNoteFont()" title="Font family">
+          <option value="">Default</option>
+          <option value="Georgia, serif">Georgia</option>
+          <option value="'Courier New', monospace">Monospace</option>
+          <option value="'Trebuchet MS', sans-serif">Trebuchet</option>
+          <option value="Palatino, serif">Palatino</option>
+        </select>
+        <select id="n-size" class="net-select" onchange="applyNoteFont()" title="Font size">
+          <option value="12">12</option>
+          <option value="13">13</option>
+          <option value="14" selected>14</option>
+          <option value="16">16</option>
+          <option value="18">18</option>
+        </select>
+      </div>
+      <div id="n-editor" contenteditable="true" spellcheck="true" data-placeholder="Write your note…"></div>
     </div>
     <div class="field" style="display:flex;gap:14px">
       <div style="flex:1">
@@ -1343,6 +1464,16 @@ HTML = r"""<!DOCTYPE html>
 
 <script>
 let allSheets  = [];
+let _projectOrder = JSON.parse(localStorage.getItem('projectOrder') || 'null');
+function orderedSheets() {
+  if (!_projectOrder) return allSheets;
+  return [...allSheets].sort((a, b) => {
+    const ia = _projectOrder.indexOf(a.name), ib = _projectOrder.indexOf(b.name);
+    if (ia === -1 && ib === -1) return 0;
+    if (ia === -1) return 1; if (ib === -1) return -1;
+    return ia - ib;
+  });
+}
 let allTasks   = {};
 let allNotes   = [];
 let allCollabs = [];
@@ -1378,43 +1509,235 @@ function applyTheme(name) {
 
 // ── Init ──────────────────────────────────────────────────────────────────
 
+// ── Demo mode ─────────────────────────────────────────────────────────────
+
+const DEMO_DATA = {
+  sheets: [
+    {name:"Research Overview",      active:11},
+    {name:"Reproducibility Study",  active:2},
+    {name:"Interdisciplinary Grant",active:3},
+    {name:"Science Policy Brief",   active:3},
+    {name:"K-12 AI Curriculum",     active:3},
+    {name:"Paper Discovery Tool",   active:0},
+    {name:"Open Science Writing",   active:3},
+    {name:"Science Software Study", active:0},
+    {name:"Citation Analysis",      active:1},
+    {name:"Survey Design",          active:1},
+    {name:"Diversity in Research",  active:4},
+    {name:"Longitudinal Study",     active:2},
+    {name:"Interview Methods",      active:3},
+    {name:"Academic Publishing",    active:2},
+  ],
+  tasks: {
+    "Research Overview": [
+      {row:2,  deadline:"15 Jun 2026", task:"Draft introduction section",     hours:"3",  status:"Completed",   completed_date:"12 Mar 2026", assignee:"Alex"},
+      {row:3,  deadline:"",            task:"Set up data pipeline",            hours:"5",  status:"Completed",   completed_date:"15 Feb 2026", assignee:"Jordan"},
+      {row:4,  deadline:"",            task:"Literature review — first pass",  hours:"8",  status:"Completed",   completed_date:"20 Jan 2026", assignee:""},
+      {row:5,  deadline:"",            task:"Stakeholder interviews",          hours:"4",  status:"Completed",   completed_date:"5 Mar 2026",  assignee:"Priya"},
+      {row:6,  deadline:"",            task:"IRB submission",                  hours:"2",  status:"Completed",   completed_date:"28 Feb 2026", assignee:""},
+      {row:7,  deadline:"",            task:"Pilot study analysis",            hours:"6",  status:"Completed",   completed_date:"1 Apr 2026",  assignee:"Jordan"},
+      {row:8,  deadline:"",            task:"Submit abstract to conference",   hours:"1",  status:"Completed",   completed_date:"10 Apr 2026", assignee:""},
+      {row:9,  deadline:"20 May 2026", task:"Run regression models",           hours:"4",  status:"Pending",     completed_date:"", assignee:"Alex"},
+      {row:10, deadline:"1 Jun 2026",  task:"Write methods section",           hours:"5",  status:"Pending",     completed_date:"", assignee:""},
+      {row:11, deadline:"15 Jun 2026", task:"Peer review response",            hours:"3",  status:"Pending",     completed_date:"", assignee:"Priya"},
+      {row:12, deadline:"25 Jun 2026", task:"Final proofreading",              hours:"2",  status:"Pending",     completed_date:"", assignee:""},
+      {row:13, deadline:"10 Jul 2026", task:"Write discussion section",        hours:"4",  status:"Not Started", completed_date:"", assignee:""},
+      {row:14, deadline:"15 Jul 2026", task:"Create figures and tables",       hours:"3",  status:"Not Started", completed_date:"", assignee:"Jordan"},
+      {row:15, deadline:"1 Aug 2026",  task:"External reviewer follow-up",     hours:"2",  status:"Not Started", completed_date:"", assignee:""},
+      {row:16, deadline:"15 Aug 2026", task:"Camera-ready submission",         hours:"1",  status:"Not Started", completed_date:"", assignee:""},
+      {row:17, deadline:"20 Aug 2026", task:"Prepare conference talk slides",  hours:"3",  status:"Not Started", completed_date:"", assignee:"Alex"},
+      {row:18, deadline:"25 Aug 2026", task:"Record demo video",               hours:"2",  status:"Not Started", completed_date:"", assignee:""},
+      {row:19, deadline:"30 May 2026", task:"Annotate dataset",                hours:"10", status:"In Progress", completed_date:"", assignee:"Priya, Jordan"},
+    ],
+    "Reproducibility Study": [
+      {row:2, deadline:"30 May 2026", task:"Replicate baseline experiments",      hours:"8", status:"Pending",     completed_date:"", assignee:""},
+      {row:3, deadline:"15 Jun 2026", task:"Document reproducibility checklist",  hours:"2", status:"Not Started", completed_date:"", assignee:""},
+    ],
+    "Interdisciplinary Grant": [
+      {row:2, deadline:"15 Jul 2026", task:"Draft specific aims page",    hours:"4", status:"Not Started", completed_date:"", assignee:""},
+      {row:3, deadline:"20 Jul 2026", task:"Prepare budget justification", hours:"3", status:"Not Started", completed_date:"", assignee:"Alex"},
+      {row:4, deadline:"25 Jul 2026", task:"Collect letters of support",  hours:"1", status:"Not Started", completed_date:"", assignee:""},
+    ],
+    "Science Policy Brief": [
+      {row:2, deadline:"15 May 2026", task:"Outline policy brief structure",  hours:"2", status:"Pending", completed_date:"", assignee:""},
+      {row:3, deadline:"1 Jun 2026",  task:"Gather evidence and citations",   hours:"4", status:"Pending", completed_date:"", assignee:"Jordan"},
+      {row:4, deadline:"20 Jun 2026", task:"Draft executive summary",         hours:"3", status:"Pending", completed_date:"", assignee:""},
+    ],
+    "K-12 AI Curriculum": [
+      {row:2, deadline:"",            task:"Design lesson plan framework",   hours:"4", status:"Completed", completed_date:"1 Mar 2026",  assignee:"Priya"},
+      {row:3, deadline:"",            task:"Develop teacher training guide", hours:"6", status:"Completed", completed_date:"15 Mar 2026", assignee:""},
+      {row:4, deadline:"1 Jun 2026",  task:"Pilot curriculum with schools",  hours:"8", status:"Pending",   completed_date:"", assignee:"Priya"},
+      {row:5, deadline:"15 Jun 2026", task:"Revise based on pilot feedback", hours:"4", status:"Pending",   completed_date:"", assignee:""},
+      {row:6, deadline:"30 Jun 2026", task:"Submit grant deliverable",       hours:"1", status:"Pending",   completed_date:"", assignee:""},
+    ],
+    "Paper Discovery Tool": [
+      {row:2, deadline:"", task:"Build keyword extraction module", hours:"6", status:"Completed", completed_date:"10 Jan 2026", assignee:"Jordan"},
+      {row:3, deadline:"", task:"Test on benchmark datasets",      hours:"4", status:"Completed", completed_date:"20 Jan 2026", assignee:""},
+      {row:4, deadline:"", task:"Write technical report",          hours:"3", status:"Completed", completed_date:"1 Feb 2026",  assignee:""},
+    ],
+    "Open Science Writing": [
+      {row:2, deadline:"1 May 2026",  task:"Draft open science statement", hours:"2", status:"Pending", completed_date:"", assignee:""},
+      {row:3, deadline:"15 May 2026", task:"Document code repository",     hours:"3", status:"Pending", completed_date:"", assignee:"Alex"},
+      {row:4, deadline:"30 May 2026", task:"Publish preprint",             hours:"1", status:"Pending", completed_date:"", assignee:""},
+    ],
+    "Science Software Study": [],
+    "Citation Analysis": [
+      {row:2, deadline:"",            task:"Collect citation network data", hours:"3", status:"Completed", completed_date:"5 Feb 2026",  assignee:""},
+      {row:3, deadline:"15 May 2026", task:"Run network analysis",          hours:"5", status:"Pending",   completed_date:"", assignee:"Jordan"},
+    ],
+    "Survey Design": [
+      {row:2, deadline:"1 May 2026", task:"Finalize survey instrument", hours:"4", status:"In Progress", completed_date:"", assignee:"Alex"},
+    ],
+    "Diversity in Research": [
+      {row:2, deadline:"15 May 2026", task:"Code interview transcripts",  hours:"8", status:"Pending", completed_date:"", assignee:"Priya"},
+      {row:3, deadline:"1 Jun 2026",  task:"Identify emerging themes",    hours:"4", status:"Pending", completed_date:"", assignee:""},
+      {row:4, deadline:"15 Jun 2026", task:"Draft findings section",      hours:"3", status:"Pending", completed_date:"", assignee:""},
+      {row:5, deadline:"30 Jun 2026", task:"Submit to journal",           hours:"1", status:"Pending", completed_date:"", assignee:""},
+    ],
+    "Longitudinal Study": [
+      {row:2, deadline:"1 Jul 2026",  task:"Design follow-up survey",          hours:"3", status:"Not Started", completed_date:"", assignee:""},
+      {row:3, deadline:"15 Jul 2026", task:"Coordinate with research sites",    hours:"2", status:"Not Started", completed_date:"", assignee:"Alex"},
+    ],
+    "Interview Methods": [
+      {row:2, deadline:"",            task:"Recruit interview participants", hours:"2",  status:"Completed",   completed_date:"1 Mar 2026",  assignee:""},
+      {row:3, deadline:"15 May 2026", task:"Conduct interviews",             hours:"12", status:"Pending",     completed_date:"", assignee:"Priya"},
+      {row:4, deadline:"30 May 2026", task:"Transcribe recordings",          hours:"6",  status:"Pending",     completed_date:"", assignee:"Jordan"},
+      {row:5, deadline:"15 Jun 2026", task:"Member check with participants", hours:"3",  status:"Not Started", completed_date:"", assignee:""},
+    ],
+    "Academic Publishing": [
+      {row:2, deadline:"1 Jun 2026", task:"Map predatory journal landscape", hours:"4", status:"Not Started", completed_date:"", assignee:""},
+      {row:3, deadline:"1 Jul 2026", task:"Draft white paper",               hours:"6", status:"Not Started", completed_date:"", assignee:""},
+    ],
+  },
+  notes: [
+    {row:2, project:"Research Overview",  note:"Align methods section with RQ3 — reviewers flagged this last round. Check framing in §3.2.", importance:"High",   purpose:"Writing",  color:"#FFF9C4", created:"15 Apr 2026", modified:"15 Apr 2026"},
+    {row:3, project:"K-12 AI Curriculum", note:"Teacher feedback from pilot was very positive — use direct quotes in the grant deliverable.", importance:"Medium", purpose:"Planning", color:"#C8E6C9", created:"20 Mar 2026", modified:"20 Mar 2026"},
+  ],
+  collabs: [
+    {row:2,  project:"Research Overview",       name:"Alex Chen",       role:"Researcher"},
+    {row:3,  project:"Research Overview",       name:"Jordan Lee",      role:"Data Analyst"},
+    {row:4,  project:"Research Overview",       name:"Priya Sharma",    role:"Co-investigator"},
+    {row:5,  project:"Research Overview",       name:"Dr. Reyes",       role:"Advisor"},
+    {row:6,  project:"Research Overview",       name:"Sam Patel",       role:"RA"},
+    {row:7,  project:"Research Overview",       name:"Mia Torres",      role:"Statistician"},
+    {row:8,  project:"Reproducibility Study",   name:"Alex Chen",       role:"Researcher"},
+    {row:9,  project:"Reproducibility Study",   name:"Jordan Lee",      role:"Data Analyst"},
+    {row:10, project:"Reproducibility Study",   name:"Fatima Hassan",   role:"Methods Lead"},
+    {row:11, project:"Interdisciplinary Grant", name:"Alex Chen",       role:"PI"},
+    {row:12, project:"Interdisciplinary Grant", name:"Dr. Reyes",       role:"Co-PI"},
+    {row:13, project:"Interdisciplinary Grant", name:"Sam Patel",       role:"Grant Writer"},
+    {row:14, project:"Interdisciplinary Grant", name:"Lin Wei",         role:"Budget Manager"},
+    {row:15, project:"Science Policy Brief",    name:"Jordan Lee",      role:"Lead Author"},
+    {row:16, project:"Science Policy Brief",    name:"Priya Sharma",    role:"Policy Analyst"},
+    {row:17, project:"Science Policy Brief",    name:"Dr. Osei",        role:"External Reviewer"},
+    {row:18, project:"K-12 AI Curriculum",      name:"Priya Sharma",    role:"Lead"},
+    {row:19, project:"K-12 AI Curriculum",      name:"Marcus Brown",    role:"Curriculum Designer"},
+    {row:20, project:"K-12 AI Curriculum",      name:"Elena Vasquez",   role:"Teacher Liaison"},
+    {row:21, project:"K-12 AI Curriculum",      name:"Sam Patel",       role:"RA"},
+    {row:22, project:"K-12 AI Curriculum",      name:"Jordan Lee",      role:"Evaluator"},
+    {row:23, project:"Paper Discovery Tool",    name:"Jordan Lee",      role:"Developer"},
+    {row:24, project:"Paper Discovery Tool",    name:"Alex Chen",       role:"Research Lead"},
+    {row:25, project:"Paper Discovery Tool",    name:"Fatima Hassan",   role:"Tester"},
+    {row:26, project:"Open Science Writing",    name:"Alex Chen",       role:"Lead"},
+    {row:27, project:"Open Science Writing",    name:"Mia Torres",      role:"Technical Writer"},
+    {row:28, project:"Citation Analysis",       name:"Jordan Lee",      role:"Data Lead"},
+    {row:29, project:"Citation Analysis",       name:"Lin Wei",         role:"Analyst"},
+    {row:30, project:"Citation Analysis",       name:"Dr. Reyes",       role:"Supervisor"},
+    {row:31, project:"Citation Analysis",       name:"Sam Patel",       role:"RA"},
+    {row:32, project:"Survey Design",           name:"Alex Chen",       role:"Lead"},
+    {row:33, project:"Survey Design",           name:"Priya Sharma",    role:"Survey Expert"},
+    {row:34, project:"Diversity in Research",   name:"Priya Sharma",    role:"Lead"},
+    {row:35, project:"Diversity in Research",   name:"Marcus Brown",    role:"Qualitative Analyst"},
+    {row:36, project:"Diversity in Research",   name:"Elena Vasquez",   role:"Field Researcher"},
+    {row:37, project:"Diversity in Research",   name:"Jordan Lee",      role:"Data Support"},
+    {row:38, project:"Longitudinal Study",      name:"Alex Chen",       role:"PI"},
+    {row:39, project:"Longitudinal Study",      name:"Dr. Reyes",       role:"Advisor"},
+    {row:40, project:"Longitudinal Study",      name:"Sam Patel",       role:"Coordinator"},
+    {row:41, project:"Interview Methods",       name:"Priya Sharma",    role:"Lead"},
+    {row:42, project:"Interview Methods",       name:"Jordan Lee",      role:"Interviewer"},
+    {row:43, project:"Interview Methods",       name:"Sam Patel",       role:"Transcriber"},
+    {row:44, project:"Interview Methods",       name:"Lin Wei",         role:"Analyst"},
+    {row:45, project:"Interdisciplinary Grant", name:"Mia Torres",      role:"Writer"},
+    {row:46, project:"Science Policy Brief",    name:"Sam Patel",       role:"Research Assistant"},
+    {row:47, project:"Diversity in Research",   name:"Lin Wei",         role:"Data Analyst"},
+    {row:48, project:"Open Science Writing",    name:"Priya Sharma",    role:"Reviewer"},
+  ],
+};
+
+let demoMode = localStorage.getItem('demoMode') === '1';
+
+async function toggleDemoMode(on) {
+  demoMode = on;
+  localStorage.setItem('demoMode', on ? '1' : '0');
+  document.getElementById('demo-banner').style.display = on ? 'flex' : 'none';
+  // Reset project selection (names differ between real and demo) but keep current view
+  activeSheet = null;
+  if (viewMode === 'tasks') document.getElementById('topbar-title').textContent = 'All Projects';
+  await Promise.all([loadSheets(), loadTasks(true), loadNotes(), loadCollabs()]);
+  renderContent();
+}
+
+function guardDemo() {
+  if (!demoMode) return false;
+  return true;  // silently block mutations in demo mode
+}
+
 async function init() {
   applyTheme(localStorage.getItem('theme') || 'classic');
+  if (demoMode) {
+    document.getElementById('demo-toggle-cb').checked = true;
+    document.getElementById('demo-banner').style.display = 'flex';
+  }
   document.getElementById('content').innerHTML = '<div class="spinner">Loading tasks…</div>';
-  const status = await fetch('/api/status').then(r => r.json()).catch(() => ({}));
-  if (status.local_mode) {
-    document.getElementById('local-mode-badge').style.display = '';
-    document.getElementById('refresh-btn').title = 'Reload from local storage';
+  if (!demoMode) {
+    const status = await fetch('/api/status').then(r => r.json()).catch(() => ({}));
+    if (status.local_mode) {
+      document.getElementById('local-mode-badge').style.display = '';
+      document.getElementById('refresh-btn').title = 'Reload from local storage';
+    }
   }
   await Promise.all([loadSheets(), loadTasks(), loadNotes(), loadCollabs()]);
 }
 
 async function loadSheets() {
+  if (demoMode) {
+    allSheets = DEMO_DATA.sheets.map(s => ({...s}));
+    renderSidebar(); return;
+  }
   const res = await fetch('/api/sheets');
   allSheets = await res.json();
   renderSidebar();
 }
 
 async function loadTasks(silent = false) {
-  if (!silent) {
-    document.getElementById('content').innerHTML = '<div class="spinner">Loading…</div>';
+  if (!silent) document.getElementById('content').innerHTML = '<div class="spinner">Loading…</div>';
+  if (demoMode) {
+    allTasks = Object.fromEntries(
+      Object.entries(DEMO_DATA.tasks).map(([k,v]) => [k, v.map(t => ({...t}))]));
+    renderContent(); return;
   }
-  const res = await fetch('/api/tasks');  // always fetch all; filter client-side
+  const res = await fetch('/api/tasks');
   allTasks = await res.json();
   renderContent();
 }
 
 async function loadNotes() {
+  if (demoMode) { allNotes = DEMO_DATA.notes.map(n => ({...n})); return; }
   const res = await fetch('/api/notes');
   allNotes = await res.json();
 }
 
 async function loadCollabs() {
+  if (demoMode) { allCollabs = DEMO_DATA.collabs.map(c => ({...c})); return; }
   const res = await fetch('/api/collaborators');
   allCollabs = await res.json();
 }
 
 async function syncAll() {
+  if (demoMode) {
+    await Promise.all([loadSheets(), loadTasks(true), loadNotes(), loadCollabs()]);
+    renderContent(); return;
+  }
   const btn = document.getElementById('refresh-btn');
   btn.textContent = '↻ Syncing…';
   btn.disabled = true;
@@ -1465,12 +1788,33 @@ function renderSidebar() {
   const list = document.getElementById('sheet-list');
   list.innerHTML = '';
   let totalActive = 0;
-  allSheets.forEach(s => {
+  let _dragSrc = null;
+  orderedSheets().forEach(s => {
     totalActive += s.active;
     const div = document.createElement('div');
     div.className = 'sheet-item' + (activeSheet === s.name ? ' active' : '');
-    div.innerHTML = `<span>${s.name}</span><span class="badge">${s.active}</span>`;
+    div.dataset.name = s.name;
+    div.draggable = true;
+    div.innerHTML = `<span class="drag-handle">⠿</span><span>${escHtml(s.name)}</span><span class="badge">${s.active}</span>`;
     div.onclick = () => selectSheet(s.name);
+    div.addEventListener('dragstart', e => {
+      _dragSrc = div; e.dataTransfer.effectAllowed = 'move';
+      setTimeout(() => div.classList.add('dragging'), 0);
+    });
+    div.addEventListener('dragend', () => div.classList.remove('dragging'));
+    div.addEventListener('dragover', e => { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; });
+    div.addEventListener('dragenter', e => { e.preventDefault(); div.classList.add('drag-over'); });
+    div.addEventListener('dragleave', () => div.classList.remove('drag-over'));
+    div.addEventListener('drop', e => {
+      e.preventDefault(); div.classList.remove('drag-over');
+      if (!_dragSrc || _dragSrc === div) return;
+      const items = [...list.querySelectorAll('.sheet-item')];
+      const si = items.indexOf(_dragSrc), di = items.indexOf(div);
+      if (si < di) list.insertBefore(_dragSrc, div.nextSibling);
+      else         list.insertBefore(_dragSrc, div);
+      _projectOrder = [...list.querySelectorAll('.sheet-item')].map(el => el.dataset.name);
+      localStorage.setItem('projectOrder', JSON.stringify(_projectOrder));
+    });
     list.appendChild(div);
   });
   document.getElementById('total-count').textContent = `${totalActive} active tasks`;
@@ -1517,6 +1861,7 @@ function selectView(mode) {
 }
 
 function renderContent() {
+  updateTopbar();
   if (viewMode !== 'procrastinate') cleanupProcrastinate();
   if (viewMode === 'upcoming')           renderUpcoming();
   else if (viewMode === 'notes')         renderNotes();
@@ -1530,7 +1875,9 @@ function renderContent() {
 // ── Tasks ─────────────────────────────────────────────────────────────────
 
 function noteProjectCard(n) {
-  const preview = n.note.length > 130 ? n.note.slice(0, 130) + '…' : n.note;
+  const p = parseNote(n.note);
+  const plainText = p.title ? p.title + (p.body ? ' — ' + (new DOMParser().parseFromString(p.body,'text/html').body.textContent||'') : '') : (new DOMParser().parseFromString(p.body,'text/html').body.textContent||'');
+  const preview = plainText.length > 130 ? plainText.slice(0,130) + '…' : plainText;
   const dateStr = (n.modified && n.modified !== n.created) ? n.modified : n.created;
   return `<div class="project-note-card" style="border-left-color:${escHtml(n.color || '#CBD5E0')}">
     <div class="project-note-meta">
@@ -1791,6 +2138,7 @@ function openStatusPicker(e, sheet, row, current) {
 
 async function pickStatus(status) {
   document.getElementById('status-picker').classList.remove('open');
+  if (guardDemo()) return;
   if (!editTarget) return;
   const { sheet, row } = editTarget;
   await fetch(`/api/tasks/${encodeURIComponent(sheet)}/${row}`, {
@@ -1869,6 +2217,7 @@ function closeModal() {
 }
 
 async function saveModal() {
+  if (guardDemo()) { document.getElementById('task-modal').classList.remove('open'); return; }
   const sheet    = document.getElementById('m-sheet').value;
   const task     = document.getElementById('m-task').value.trim();
   const deadline = fromDateInput(document.getElementById('m-deadline').value);
@@ -1898,6 +2247,7 @@ async function saveModal() {
 }
 
 async function deleteTask(sheet, row) {
+  if (guardDemo()) return;
   if (!confirm('Delete this task?')) return;
   await fetch(`/api/tasks/${encodeURIComponent(sheet)}/${row}`, { method: 'DELETE' });
   await Promise.all([loadSheets(), loadTasks(true)]);
@@ -1938,13 +2288,17 @@ function renderNotes() {
     const borderColor = n.color || '#CBD5E0';
     const created  = n.created  ? `📅 ${n.created}`  : '';
     const modified = n.modified && n.modified !== n.created ? ` · edited ${n.modified}` : '';
+    const p = parseNote(n.note);
+    const bodyStyle = `font-family:${p.font||'inherit'};font-size:${p.size||14}px`;
+    const titleHtml = p.title ? `<div class="note-title">${escHtml(p.title)}</div>` : '';
     return `<div class="note-card" style="border-left-color:${escHtml(borderColor)}">
       <div class="note-header">
         <span class="note-project">${escHtml(n.project)}</span>
         <span class="note-badge imp-${escHtml(n.importance)}">${escHtml(n.importance)}</span>
         <span class="note-badge pur-${escHtml(n.purpose)}">${escHtml(n.purpose)}</span>
       </div>
-      <div class="note-text">${escHtml(n.note)}</div>
+      ${titleHtml}
+      <div class="note-body" style="${bodyStyle}">${sanitizeNoteHTML(p.body)}</div>
       <div class="note-footer">
         <span class="note-dates">${created}${modified}</span>
         <div class="note-actions-inline">
@@ -1958,6 +2312,37 @@ function renderNotes() {
   content.innerHTML = toolbar + `<div class="notes-grid">${cards}</div>`;
 }
 
+function parseNote(raw) {
+  try {
+    const p = JSON.parse(raw);
+    if (p && p.v === 2) return p;
+  } catch {}
+  // Legacy plain text — escape and preserve newlines
+  return { v:1, title:'', font:'', size:'14', body: escHtml(raw).replace(/\n/g, '<br>') };
+}
+
+function sanitizeNoteHTML(html) {
+  const d = document.createElement('div');
+  d.innerHTML = html;
+  d.querySelectorAll('script,iframe,object,embed,style,link').forEach(el => el.remove());
+  d.querySelectorAll('*').forEach(el => {
+    [...el.attributes].forEach(a => { if (a.name.startsWith('on')) el.removeAttribute(a.name); });
+  });
+  return d.innerHTML;
+}
+
+function execFmt(cmd) {
+  document.execCommand('styleWithCSS', false, false);
+  document.execCommand(cmd, false, null);
+  document.getElementById('n-editor').focus();
+}
+
+function applyNoteFont() {
+  const ed = document.getElementById('n-editor');
+  ed.style.fontFamily = document.getElementById('n-font').value || '';
+  ed.style.fontSize   = (document.getElementById('n-size').value || '14') + 'px';
+}
+
 function openNoteModal(row = null) {
   if (typeof row !== 'number') row = null;  // guard against click-event being passed
   noteEditRow = row;
@@ -1969,18 +2354,30 @@ function openNoteModal(row = null) {
     `<option>${escHtml(s.name)}</option>`
   ).join('');
 
+  const ed = document.getElementById('n-editor');
   if (row) {
     const n = allNotes.find(x => x.row === row);
     if (n) {
+      const p = parseNote(n.note);
       npSel.value = n.project;
-      document.getElementById('n-text').value = n.note;
+      document.getElementById('n-title').value = p.title || '';
+      ed.innerHTML = sanitizeNoteHTML(p.body || '');
+      document.getElementById('n-font').value = p.font || '';
+      document.getElementById('n-size').value = p.size || '14';
+      ed.style.fontFamily = p.font || '';
+      ed.style.fontSize   = (p.size || '14') + 'px';
       document.getElementById('n-importance').value = n.importance;
       document.getElementById('n-purpose').value = n.purpose;
       selectedNoteColor = n.color || NOTE_COLORS[0];
     }
   } else {
     if (activeSheet) npSel.value = activeSheet;
-    document.getElementById('n-text').value = '';
+    document.getElementById('n-title').value = '';
+    ed.innerHTML = '';
+    ed.style.fontFamily = '';
+    ed.style.fontSize = '14px';
+    document.getElementById('n-font').value = '';
+    document.getElementById('n-size').value = '14';
     document.getElementById('n-importance').value = 'Medium';
     document.getElementById('n-purpose').value = 'Other';
   }
@@ -2007,11 +2404,17 @@ function closeNoteModal() {
 }
 
 async function saveNote() {
+  if (guardDemo()) { document.getElementById('note-modal').classList.remove('open'); return; }
   const project    = document.getElementById('n-project').value;
-  const note       = document.getElementById('n-text').value.trim();
+  const title      = document.getElementById('n-title').value.trim();
+  const font       = document.getElementById('n-font').value;
+  const size       = document.getElementById('n-size').value;
+  const rawBody    = document.getElementById('n-editor').innerHTML.trim();
+  const textContent= document.getElementById('n-editor').textContent.trim();
   const importance = document.getElementById('n-importance').value;
   const purpose    = document.getElementById('n-purpose').value;
-  if (!note) { alert('Note text is required.'); return; }
+  if (!textContent && !title) { alert('Please add a title or note text.'); return; }
+  const note = JSON.stringify({ v:2, title, font, size, body: sanitizeNoteHTML(rawBody) });
   const body = { project, note, importance, purpose, color: selectedNoteColor };
   const url    = noteEditRow ? `/api/notes/${noteEditRow}` : '/api/notes';
   const method = noteEditRow ? 'PUT' : 'POST';
@@ -2025,6 +2428,7 @@ async function saveNote() {
 }
 
 async function deleteNote(row) {
+  if (guardDemo()) return;
   if (!confirm('Delete this note?')) return;
   await fetch(`/api/notes/${row}`, { method: 'DELETE' });
   await loadNotes();
@@ -2091,6 +2495,7 @@ function closeCollabModal() {
 }
 
 async function saveCollab() {
+  if (guardDemo()) { document.getElementById('collab-modal').classList.remove('open'); return; }
   const project = document.getElementById('c-project').value;
   const names   = document.getElementById('c-name').value.split(',').map(n => n.trim()).filter(Boolean);
   const role    = document.getElementById('c-role').value.trim();
@@ -2105,6 +2510,7 @@ async function saveCollab() {
 }
 
 async function deleteCollab(row) {
+  if (guardDemo()) return;
   if (!confirm('Remove this collaborator?')) return;
   await fetch(`/api/collaborators/${row}`, { method: 'DELETE' });
   await loadCollabs();
@@ -2119,6 +2525,7 @@ function openNewProjectModal() {
 }
 
 async function saveNewProject() {
+  if (guardDemo()) { document.getElementById('project-modal').classList.remove('open'); return; }
   const name = document.getElementById('p-name').value.trim();
   if (!name) { alert('Project name is required.'); return; }
   const res = await fetch('/api/projects', {
@@ -2219,6 +2626,7 @@ function renderGarden() {
 }
 
 async function deleteProject(name) {
+  if (guardDemo()) return;
   if (!confirm(`Permanently delete project "${name}" and all its tasks?`)) return;
   const res = await fetch(`/api/projects/${encodeURIComponent(name)}`, { method: 'DELETE' });
   if (!res.ok) { alert('Failed to delete project.'); return; }
@@ -2350,7 +2758,7 @@ function renderGarDone() {
     <div class="gardone-wrap">
       <div class="gardone-header">
         <div class="gardone-title">🌸 GarDone</div>
-        <div class="gardone-subtitle">A record of things completed</div>
+        <div class="gardone-subtitle">a garden of things done</div>
         <div class="gardone-stats-pill">
           <span>${totalDone} tasks</span>
           ${hoursLine}
@@ -2409,6 +2817,7 @@ function updateBulkBar() {
 }
 
 async function bulkMark(status) {
+  if (guardDemo()) return;
   if (!selectedTasks.size) return;
   await Promise.all([...selectedTasks].map(k => {
     const [sheet, row] = k.split('::');
@@ -2422,6 +2831,7 @@ async function bulkMark(status) {
 }
 
 async function bulkDelete() {
+  if (guardDemo()) return;
   if (!selectedTasks.size) return;
   if (!confirm(`Permanently delete ${selectedTasks.size} task${selectedTasks.size !== 1 ? 's' : ''}?`)) return;
   await Promise.all([...selectedTasks].map(k => {

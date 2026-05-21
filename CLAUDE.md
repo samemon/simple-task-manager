@@ -111,21 +111,26 @@ allTasks   = {}   // {projectName: [taskObjects]}
 allNotes   = []   // flat array of note objects
 allCollabs = []   // flat array of collab objects
 activeSheet  = null   // null = "All Projects"
-viewMode     = 'tasks' | 'upcoming' | 'notes' | 'collaborators' | 'stats' | 'procrastinate'
+viewMode     = 'tasks' | 'upcoming' | 'notes' | 'collaborators' | 'stats' | 'procrastinate' | 'gardone'
+demoMode     = bool  // true = use DEMO_DATA instead of API
+_projectOrder = string[] | null  // custom sidebar order from localStorage
 ```
 
 ### Rendering flow
 ```
-renderContent()
+renderContent()          ← always calls updateTopbar() first
   ├── renderTasks()      — task list + garden view
   ├── renderUpcoming()   — deadline-grouped tasks
   ├── renderNotes()      — note cards
   ├── renderCollaborators()
   ├── renderStats()
+  ├── renderGarDone()    — botanical specimen view of completed tasks
   └── renderProcrastinate() — snake game + quotes
 ```
 
 Navigation (`selectSheet`, `selectUpcoming`, `selectView`) always calls `renderContent()` directly using in-memory data — **never triggers a network fetch**.
+
+`renderContent()` calls `updateTopbar()` at the top — this is the single place that syncs topbar state (filter row visibility, add/search/export button state) with `viewMode`. Do not call `updateTopbar()` separately from navigation functions.
 
 ### XSS rules — critical
 Two escaping helpers exist for different contexts:
@@ -182,19 +187,23 @@ Five CSS variable sets in `THEMES` object. `applyTheme(name)` writes all `--` va
 ## Implemented features (complete list)
 
 - Project management: create, delete, switch between projects
+- Sidebar drag-to-reorder: drag projects to reorder, persisted in `localStorage.projectOrder`
 - Tasks: add, edit, delete, inline status cycle, date picker deadline
 - Bulk status change: checkbox-select multiple tasks, apply status to all
 - Search: real-time filter across all projects
 - Export CSV: current project or all projects
 - Upcoming view: tasks grouped Overdue / Today / This Week / This Month / Later
 - Stats view: overall %, hours logged, by-status breakdown, per-project bars
-- Notes: add, edit, delete; importance + purpose tags; color swatches; sorted newest-first
+- Notes: rich text editor (bold/italic/underline/bullets/numbered lists), title, font family (5), font size; importance + purpose tags; color swatches; sorted newest-first
 - Collaborators: add (comma-separated for bulk), delete, assignable to tasks
 - Flower progress visualization: per-project SVG flower, one petal per task
+- GarDone tab: botanical specimen view of all completed tasks, parchment aesthetic
+- `wall_preview.py`: standalone script that generates GarDone as a static HTML file
 - Five color themes (Classic, Ocean, Sage, Sunset, Lavender), persisted in localStorage
 - Resizable sidebar, width persisted in localStorage
 - Local mode: full offline operation with `local_data.json`
 - Sync button: force re-fetch from Google Sheets
+- Demo mode: toggle in sidebar footer loads hardcoded demo data (14 projects, 52 tasks); all mutations blocked; real data untouched
 - Procrastinate tab: snake game with 1–5 min timer, deep quotes panel
 
 ## Intentionally deferred (do not implement without discussion)
@@ -221,6 +230,15 @@ Exactly four, case-sensitive:
 ```
 `ACTIVE_STATUSES = {"Not Started", "In Progress", "Pending"}` — used for sidebar counts.
 
+### Note storage format
+Notes are stored as a JSON string in the `Note` column of `_notes`:
+```json
+{"v":2,"title":"My Title","font":"Georgia, serif","size":"14","body":"<b>Bold</b> content…"}
+```
+`parseNote(raw)` handles the round-trip: tries `JSON.parse`; if it fails (legacy plain-text note), wraps the string as `{v:1, body: escHtml(raw)}`. Always use `parseNote()` when reading note content — never access `n.note` directly for display.
+
+`sanitizeNoteHTML(html)` strips `<script>`, `<iframe>`, and `on*` attributes before rendering note body HTML.
+
 ### Note importance / purpose
 Importance: `"High" | "Medium" | "Low"`  
 Purpose: `"Design" | "Writing" | "Analysis" | "Planning" | "Other"`  
@@ -243,6 +261,8 @@ These map directly to CSS classes (`imp-High`, `pur-Design`, etc.) — adding ne
 |-----|-------|--------|
 | `theme` | `"classic"` \| `"ocean"` \| `"sage"` \| `"sunset"` \| `"lavender"` | `applyTheme()` |
 | `sidebarWidth` | integer px | sidebar resize handler |
+| `projectOrder` | JSON array of project names | sidebar drag-to-reorder |
+| `demoMode` | `"1"` \| `"0"` | `toggleDemoMode()` |
 
 ## CSS architecture
 
@@ -251,6 +271,25 @@ Adding a new theme means adding an entry to the `THEMES` JS object — the CSS a
 
 Status badge classes follow the pattern `status-Not\ Started`, `status-In\ Progress`, etc. (spaces escaped in CSS).  
 Note badge classes: `imp-High`, `imp-Medium`, `imp-Low`, `pur-Design`, etc.
+
+## Demo mode architecture
+
+`DEMO_DATA` is a JS constant (baked into the HTML string) containing 14 projects, 52 tasks, 47 collaborators, and 2 notes — matching the rough scale of real data.
+
+`demoMode` is read from `localStorage` on startup. When true:
+- `loadSheets/loadTasks/loadNotes/loadCollabs` return shallow copies of `DEMO_DATA` instead of hitting the API
+- All mutation functions (`saveModal`, `deleteTask`, `pickStatus`, `bulkMark`, `bulkDelete`, `saveNote`, `deleteNote`, `saveCollab`, `deleteCollab`, `saveNewProject`, `deleteProject`) call `guardDemo()` at the top and return early — nothing touches the real data
+- `syncAll()` re-reads from `DEMO_DATA` instead of calling `/api/sync`
+
+`toggleDemoMode(on)` resets `activeSheet` to null (project names differ between real and demo) but preserves `viewMode`.
+
+## Topbar layout
+
+The topbar uses `flex-wrap: wrap` with two logical rows:
+- **Row 1**: `<h2>` title (flex:1) + `#topbar-right` div (sync, add buttons) — always visible
+- **Row 2**: `#filter-area` (order:10, width:100%) — filter pills + search + export — only shown in task/upcoming views
+
+`#filter-area` contains the filter buttons AND the search input and export button. `updateTopbar()` controls visibility of these elements and is called at the top of every `renderContent()` invocation.
 
 ## What NOT to do
 

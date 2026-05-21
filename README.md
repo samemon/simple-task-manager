@@ -28,6 +28,9 @@ Backed by Google Sheets (or runs fully offline) — track projects, deadlines, n
 - **Search** — filter tasks across all projects instantly
 - **Bulk status change** — select multiple tasks and mark them all at once
 - **Export CSV** — download any project's tasks as a spreadsheet
+- **Drag to reorder** — drag projects in the sidebar to your preferred order
+- **Rich notes** — bold, italic, underline, bullet and numbered lists, title, font family and size
+- **Demo mode** — toggle in the sidebar to load sample data for screenshots; your real data is untouched
 - **Themes** — five pastel color themes (Classic, Ocean, Sage, Sunset, Lavender)
 - **GarDone** — a botanical specimen view of all completed tasks; each project rendered as a pressed flower with its task list, parchment-style
 - **Procrastinate tab** — snake game with a timer and deep quotes for earned breaks
