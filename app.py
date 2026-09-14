@@ -930,22 +930,14 @@ HTML = r"""<!DOCTYPE html>
   .note-delete-btn:hover { background: #FED7D7; color: #C53030; }
 
   /* ── Literature ── */
-  .lit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
-  .lit-card {
-    background: var(--surface); border-radius: 10px; padding: 16px 16px 12px;
-    border-left: 5px solid var(--accent); box-shadow: 0 1px 4px rgba(0,0,0,0.07);
-    transition: box-shadow 0.15s;
-  }
-  .lit-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.11); }
-  .lit-project { font-size: 10px; font-weight: 700; color: var(--text-muted);
-                  text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px; }
-  .lit-title { font-size: 14px; font-weight: 700; margin-bottom: 4px; word-break: break-word; }
-  .lit-title a { color: var(--accent); text-decoration: none; }
+  .lit-title { font-size: 14px; color: var(--text); }
+  .lit-title a { color: var(--accent); text-decoration: none; font-weight: 600; }
   .lit-title a:hover { text-decoration: underline; }
-  .lit-meta { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; }
-  .lit-notes { font-size: 12px; color: var(--text); line-height: 1.5; margin-bottom: 10px;
-               white-space: pre-wrap; word-break: break-word; }
-  .lit-footer { display: flex; justify-content: flex-end; gap: 4px; }
+  .lit-note-panel {
+    margin-top: 7px; padding: 8px 10px; background: var(--bg); border-radius: 6px;
+    font-size: 12px; color: var(--text); line-height: 1.5;
+    white-space: pre-wrap; word-break: break-word;
+  }
 
   /* ── Inline project extras ── */
   .project-extras { margin-top: 10px; margin-bottom: 6px; display: flex; flex-direction: column; gap: 8px; }
@@ -2796,25 +2788,47 @@ function renderLiterature() {
     return;
   }
 
+  const byProject = {};
+  items.forEach(l => { (byProject[l.project] = byProject[l.project] || []).push(l); });
+
+  const projectNames = allSheets.map(s => s.name).filter(p => byProject[p]);
+  Object.keys(byProject).forEach(p => { if (!projectNames.includes(p)) projectNames.push(p); });
+
   const byModified = (a, b) => (b.modified || '').localeCompare(a.modified || '') || (b.row - a.row);
-  const cards = [...items].sort(byModified).map(l => {
-    const titleHtml = l.link
-      ? `<a href="${escHtml(l.link)}" target="_blank" rel="noopener noreferrer">${escHtml(l.title)}</a>`
-      : escHtml(l.title);
-    const metaParts = [l.authors, l.year].filter(Boolean);
-    return `<div class="lit-card">
-      <div class="lit-project">${escHtml(l.project)}</div>
-      <div class="lit-title">${titleHtml}</div>
-      ${metaParts.length ? `<div class="lit-meta">${escHtml(metaParts.join(' · '))}</div>` : ''}
-      ${l.notes ? `<div class="lit-notes">${escHtml(l.notes)}</div>` : ''}
-      <div class="lit-footer">
-        <button class="note-action-btn" onclick="openLitModal(${l.row})">✏ Edit</button>
-        <button class="note-action-btn note-delete-btn" onclick="deleteLit(${l.row})">✕ Delete</button>
-      </div>
+  const sections = projectNames.map(project => {
+    const refs = byProject[project].slice().sort(byModified);
+    const rows = refs.map(l => litRow(l)).join('');
+    return `<div class="section">
+      <div class="section-title">${escHtml(project)} &mdash; ${refs.length} reference${refs.length !== 1 ? 's' : ''}</div>
+      <table class="task-table"><tbody>${rows}</tbody></table>
     </div>`;
   }).join('');
 
-  content.innerHTML = toolbar + `<div class="lit-grid">${cards}</div>`;
+  content.innerHTML = toolbar + sections;
+}
+
+function litRow(l) {
+  const titleHtml = l.link
+    ? `<a href="${escHtml(l.link)}" target="_blank" rel="noopener noreferrer">${escHtml(l.title)}</a>`
+    : escHtml(l.title);
+  const metaParts = [l.authors, l.year].filter(Boolean);
+  return `<tr class="task-row">
+    <td style="width:100%">
+      <div class="lit-title">${titleHtml}</div>
+      ${metaParts.length ? `<div class="task-meta">${escHtml(metaParts.join('  ·  '))}</div>` : ''}
+      <div class="lit-note-panel" id="lit-note-${l.row}" hidden>${l.notes ? escHtml(l.notes) : 'No notes yet.'}</div>
+    </td>
+    <td style="white-space:nowrap">
+      <button class="icon-btn" title="Show notes" onclick="toggleLitNote(${l.row})">🗒</button>
+      <button class="icon-btn" title="Edit" onclick="openLitModal(${l.row})">✏️</button>
+      <button class="icon-btn" title="Delete" onclick="deleteLit(${l.row})">🗑</button>
+    </td>
+  </tr>`;
+}
+
+function toggleLitNote(row) {
+  const el = document.getElementById(`lit-note-${row}`);
+  if (el) el.hidden = !el.hidden;
 }
 
 function openLitModal(row = null) {

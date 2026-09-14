@@ -129,7 +129,7 @@ renderContent()          ← always calls updateTopbar() first
   ├── renderTasks()      — task list + garden view
   ├── renderUpcoming()   — deadline-grouped tasks
   ├── renderNotes()      — note cards
-  ├── renderLiterature() — literature reference cards, per-project filter, .bib export
+  ├── renderLiterature() — per-project boxes of references (title link + collapsible notes), .bib export
   ├── renderCollaborators()
   ├── renderStats()
   ├── renderGarDone()    — botanical specimen view of completed tasks
@@ -204,7 +204,7 @@ Five CSS variable sets in `THEMES` object. `applyTheme(name)` writes all `--` va
 - Plan for Today: pinned section above Overdue in the Upcoming view — drag any task row onto it, or click its `+` to search-and-add a task, to build a daily working list independent of deadline. Stored client-side (`localStorage`), resets automatically each calendar day
 - Stats view: overall %, hours logged, by-status breakdown, per-project bars
 - Notes: rich text editor (bold/italic/underline/bullets/numbered lists), title, font family (5), font size; importance + purpose tags; color swatches; sorted newest-first
-- Literature: per-project reference list (title, clickable link, authors, year, plain-text notes); add/edit/delete via modal; project filter dropdown; client-side `.bib` export (per-project or all) for import into Zotero/reference managers
+- Literature: references grouped into a contained box per project (like the Collaborators view); each row shows the title as a clickable link (URL itself hidden), a 🗒 button that toggles a hidden notes/annotation panel, edit and delete; add/edit via modal (title, link, authors, year, notes); project filter dropdown; client-side `.bib` export (per-project or all) for import into Zotero/reference managers
 - Collaborators: add (comma-separated for bulk), delete, assignable to tasks
 - Flower progress visualization: per-project SVG flower, one petal per task
 - GarDone tab: botanical specimen view of all completed tasks, parchment aesthetic
