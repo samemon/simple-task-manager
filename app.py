@@ -264,6 +264,39 @@ def patch_cache(sheet_name, row, values):
     rows[idx] = list(values)
 
 
+# ── Meta-cache helpers (notes/collabs/literature) ───────────────────────────
+# Let a single note/collab/literature edit patch its own cache array in place
+# instead of invalidate_cache() forcing a full re-fetch of every worksheet on
+# the next request.
+#
+# patch_meta_cache is idempotent (same row, same values) so it's safe to call
+# unconditionally after ws.update() — same as patch_cache() already being
+# called unconditionally after both real and _LocalWS task updates, even
+# though _LocalWS.update() also patches the cache itself.
+#
+# append/delete are NOT idempotent — calling them twice would duplicate or
+# over-remove a row — and _LocalWS.append_row()/delete_rows() already apply
+# the same mutation to the cache as a side effect in local mode. So these two
+# only need to run for the real-Sheets `ws` (a plain gspread Worksheet has no
+# such side effect).
+
+def patch_meta_cache(cache_list, row, values):
+    idx = row - 1
+    while len(cache_list) <= idx:
+        cache_list.append([])
+    cache_list[idx] = list(values)
+
+
+def append_meta_cache(cache_list, ws, values):
+    if not isinstance(ws, _LocalWS):
+        cache_list.append(list(values))
+
+
+def delete_meta_cache_row(cache_list, ws, row):
+    if not isinstance(ws, _LocalWS) and 0 < row <= len(cache_list):
+        cache_list.pop(row - 1)
+
+
 def _yesterday():
     return (datetime.date.today() - datetime.timedelta(days=1)).strftime("%d %b %Y")
 
@@ -465,12 +498,13 @@ def api_add_note():
     data = request.get_json(silent=True) or {}
     ws = ensure_meta_ws(NOTES_SHEET, NOTE_HEADERS)
     today = _today()
-    ws.append_row([
+    new_row = [
         data.get("project", ""), data.get("note", ""),
         data.get("importance", "Medium"), data.get("purpose", "Other"),
         data.get("color", NOTE_COLORS[0]), today, today,
-    ])
-    invalidate_cache()
+    ]
+    ws.append_row(new_row)
+    append_meta_cache(_notes_cache, ws, new_row)
     return jsonify({"ok": True})
 
 
@@ -492,7 +526,7 @@ def api_update_note(row):
         _today(),     # modified = today
     ]
     ws.update(range_name=f"A{row}:G{row}", values=[updated])
-    invalidate_cache()
+    patch_meta_cache(_notes_cache, row, updated)
     return jsonify({"ok": True})
 
 
@@ -500,7 +534,7 @@ def api_update_note(row):
 def api_delete_note(row):
     ws = ensure_meta_ws(NOTES_SHEET, NOTE_HEADERS)
     ws.delete_rows(row)
-    invalidate_cache()
+    delete_meta_cache_row(_notes_cache, ws, row)
     return jsonify({"ok": True})
 
 
@@ -526,9 +560,10 @@ def api_add_collaborator():
     for name in names:
         name = name.strip()
         if name and name.lower() not in existing:
-            ws.append_row([project, name, role])
+            new_row = [project, name, role]
+            ws.append_row(new_row)
+            append_meta_cache(_collabs_cache, ws, new_row)
             existing.add(name.lower())
-    invalidate_cache()
     return jsonify({"ok": True})
 
 
@@ -536,7 +571,7 @@ def api_add_collaborator():
 def api_delete_collaborator(row):
     ws = ensure_meta_ws(COLLABS_SHEET, COLLAB_HEADERS)
     ws.delete_rows(row)
-    invalidate_cache()
+    delete_meta_cache_row(_collabs_cache, ws, row)
     return jsonify({"ok": True})
 
 
@@ -558,12 +593,13 @@ def api_add_literature():
         return jsonify({"error": "project and title required"}), 400
     ws = ensure_meta_ws(LIT_SHEET, LIT_HEADERS)
     today = _today()
-    ws.append_row([
+    new_row = [
         data["project"], data["title"], data.get("link", ""),
         data.get("authors", ""), data.get("year", ""), data.get("notes", ""),
         today, today,
-    ])
-    invalidate_cache()
+    ]
+    ws.append_row(new_row)
+    append_meta_cache(_lit_cache, ws, new_row)
     return jsonify({"ok": True})
 
 
@@ -586,7 +622,7 @@ def api_update_literature(row):
         _today(),     # modified = today
     ]
     ws.update(range_name=f"A{row}:H{row}", values=[updated])
-    invalidate_cache()
+    patch_meta_cache(_lit_cache, row, updated)
     return jsonify({"ok": True})
 
 
@@ -594,7 +630,7 @@ def api_update_literature(row):
 def api_delete_literature(row):
     ws = ensure_meta_ws(LIT_SHEET, LIT_HEADERS)
     ws.delete_rows(row)
-    invalidate_cache()
+    delete_meta_cache_row(_lit_cache, ws, row)
     return jsonify({"ok": True})
 
 

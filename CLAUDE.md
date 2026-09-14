@@ -41,7 +41,7 @@ Everything lives in `app.py`:
 | Local | `local_data.json` | No `config.py`, or `SHEET_ID` is empty |
 
 ### `_LocalWS` — the local-mode shim
-All mutation routes call methods on a worksheet object (`ws.update(...)`, `ws.append_row(...)`, `ws.delete_rows(...)`). In local mode, `_LocalWS` provides the same interface backed by the in-memory caches + `_local_save()`. This means **all API routes work unchanged in both modes** — never add mode-specific branches inside a route; put them in `_LocalWS` instead.
+All mutation routes call methods on a worksheet object (`ws.update(...)`, `ws.append_row(...)`, `ws.delete_rows(...)`). In local mode, `_LocalWS` provides the same interface backed by the in-memory caches + `_local_save()`. This means **all API routes work unchanged in both modes** — never add mode-specific branches inside a route; put them in `_LocalWS` instead. (`append_meta_cache`/`delete_meta_cache_row` are a narrow, deliberate exception — see below — because those two operations are not idempotent and `_LocalWS` already applies them internally.)
 
 ### In-memory cache
 ```
@@ -53,11 +53,10 @@ _ws_cache     = {}   # {title: worksheet object or _LocalWS}
 DATA_CACHE_TTL = float('inf')  # never auto-expire
 ```
 
-**Never read from Sheets on every request.** Instead:
-- Mutations call `ws.update/append_row/delete_rows` then `patch_cache()` or `invalidate_cache()`
-- `patch_cache(sheet, row, values)` — updates a single row in `_data_cache` without a network read (use after task edits)
-- `invalidate_cache()` — zeroes all caches (use after notes/collabs/literature mutations, which need a full re-read)
-- The only full re-fetch is `_fetch_all()`, triggered by `GET /api/sync`
+**Never read from Sheets on every request, and never force a full re-fetch for a single-row edit.** Every mutation patches its own cache array in place instead:
+- Tasks: `ws.update(...)` then `patch_cache(sheet, row, values)` — updates one row in `_data_cache` without a network read. Safe to call even though `_LocalWS.update()` already patches the same cache internally (idempotent — same row, same values).
+- Notes/collabs/literature: `ws.update(...)` then `patch_meta_cache(cache_list, row, values)` (same idempotent-so-always-safe pattern). For `ws.append_row(...)` and `ws.delete_rows(...)`, use `append_meta_cache(cache_list, ws, values)` / `delete_meta_cache_row(cache_list, ws, row)` instead — these two are **not** idempotent (append would duplicate the row, delete would remove an extra one), and `_LocalWS.append_row()`/`.delete_rows()` already mutate the cache as part of local-mode persistence, so the helper is a no-op there and only touches the cache for the real-Sheets `ws` (checked via `isinstance(ws, _LocalWS)`).
+- `invalidate_cache()` — zeroes all caches, forcing the next read to do a full `_fetch_all()` re-fetch of every worksheet. Reserved for `POST /api/sync` only — **do not call it from a mutation route**; a burst of `invalidate_cache()`-then-refetch calls (e.g. scripting several edits back to back) can exhaust Google's per-minute read quota and start returning 500s, which is exactly what patch/append/delete-in-place avoids.
 
 ### Row numbering
 Sheets rows are **1-indexed**. Row 1 is always the header row. `parse_tasks()` skips `rows[1:]`, so tasks start at row 2. When creating a new project, always initialise `_data_cache[name] = [TASK_HEADERS]` (not `[]`) so the first added task lands at row 2, not row 1.
