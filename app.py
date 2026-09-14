@@ -930,6 +930,21 @@ HTML = r"""<!DOCTYPE html>
   .note-delete-btn:hover { background: #FED7D7; color: #C53030; }
 
   /* ── Literature ── */
+  .lit-cards { display: flex; flex-direction: column; gap: 20px; }
+  .lit-project-card {
+    background: var(--surface); border-radius: 14px; overflow: hidden;
+    border: 1.5px solid var(--border); border-top: 4px solid;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+    transition: box-shadow 0.18s ease, transform 0.18s ease;
+  }
+  .lit-project-card:hover { box-shadow: 0 6px 20px rgba(0,0,0,0.13); transform: translateY(-2px); }
+  .lit-project-card .task-table { box-shadow: none; border-radius: 0; border-top: 1px solid var(--border); }
+  .lit-card-header { display: flex; align-items: center; gap: 12px; padding: 12px 18px; }
+  .lit-card-flower { flex-shrink: 0; display: flex; }
+  .lit-card-heading { flex: 1; min-width: 0; }
+  .lit-card-title { font-size: 15px; font-weight: 700; word-break: break-word; }
+  .lit-card-count { font-size: 11px; font-weight: 700; text-transform: uppercase;
+                     letter-spacing: 0.6px; margin-top: 2px; }
   .lit-title { font-size: 14px; color: var(--text); }
   .lit-title a { color: var(--accent); text-decoration: none; font-weight: 600; }
   .lit-title a:hover { text-decoration: underline; }
@@ -2795,16 +2810,24 @@ function renderLiterature() {
   Object.keys(byProject).forEach(p => { if (!projectNames.includes(p)) projectNames.push(p); });
 
   const byModified = (a, b) => (b.modified || '').localeCompare(a.modified || '') || (b.row - a.row);
-  const sections = projectNames.map(project => {
+  const cards = projectNames.map(project => {
     const refs = byProject[project].slice().sort(byModified);
+    const fd = FLOWER_DEFS[hashStr(project) % FLOWER_DEFS.length];
+    const bloom = refs.map(() => ({ status: 'Completed' }));  // every petal blooms — one per reference
     const rows = refs.map(l => litRow(l)).join('');
-    return `<div class="section">
-      <div class="section-title">${escHtml(project)} &mdash; ${refs.length} reference${refs.length !== 1 ? 's' : ''}</div>
+    return `<div class="lit-project-card" style="border-color:${fd.stroke}">
+      <div class="lit-card-header" style="background:${fd.empty}">
+        <div class="lit-card-flower">${flowerSVG(project, bloom, 44)}</div>
+        <div class="lit-card-heading">
+          <div class="lit-card-title" style="color:${fd.center}">${escHtml(project)}</div>
+          <div class="lit-card-count" style="color:${fd.stroke}">${refs.length} reference${refs.length !== 1 ? 's' : ''}</div>
+        </div>
+      </div>
       <table class="task-table"><tbody>${rows}</tbody></table>
     </div>`;
   }).join('');
 
-  content.innerHTML = toolbar + sections;
+  content.innerHTML = toolbar + `<div class="lit-cards">${cards}</div>`;
 }
 
 function litRow(l) {
