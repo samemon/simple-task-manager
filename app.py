@@ -930,27 +930,39 @@ HTML = r"""<!DOCTYPE html>
   .note-delete-btn:hover { background: #FED7D7; color: #C53030; }
 
   /* ── Literature ── */
-  .lit-cards { display: flex; flex-direction: column; gap: 20px; }
+  .lit-search-input {
+    padding: 6px 12px; border: 1.5px solid var(--border); border-radius: 20px;
+    font-size: 13px; font-family: inherit; outline: none; width: 190px;
+    background: var(--bg); color: var(--text); transition: border-color 0.15s, width 0.2s;
+  }
+  .lit-search-input:focus { border-color: var(--accent); width: 240px; }
+  .lit-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; align-items: start; }
+  @media (max-width: 760px) {
+    .lit-cards { grid-template-columns: 1fr; }
+  }
   .lit-project-card {
-    background: var(--surface); border-radius: 14px; overflow: hidden;
+    background: var(--surface); border-radius: 12px; overflow: hidden;
     border: 1.5px solid var(--border); border-top: 4px solid;
     box-shadow: 0 1px 4px rgba(0,0,0,0.07);
     transition: box-shadow 0.18s ease, transform 0.18s ease;
+    display: flex; flex-direction: column;
   }
   .lit-project-card:hover { box-shadow: 0 6px 20px rgba(0,0,0,0.13); transform: translateY(-2px); }
-  .lit-project-card .task-table { box-shadow: none; border-radius: 0; border-top: 1px solid var(--border); }
-  .lit-card-header { display: flex; align-items: center; gap: 12px; padding: 12px 18px; }
+  .lit-project-card .task-table { box-shadow: none; border-radius: 0; }
+  .lit-project-card .task-row td { padding: 8px 10px; }
+  .lit-card-header { display: flex; align-items: center; gap: 9px; padding: 9px 12px; }
   .lit-card-flower { flex-shrink: 0; display: flex; }
   .lit-card-heading { flex: 1; min-width: 0; }
-  .lit-card-title { font-size: 15px; font-weight: 700; word-break: break-word; }
-  .lit-card-count { font-size: 11px; font-weight: 700; text-transform: uppercase;
-                     letter-spacing: 0.6px; margin-top: 2px; }
-  .lit-title { font-size: 14px; color: var(--text); }
+  .lit-card-title { font-size: 13px; font-weight: 700; word-break: break-word; }
+  .lit-card-count { font-size: 10px; font-weight: 700; text-transform: uppercase;
+                     letter-spacing: 0.5px; margin-top: 1px; }
+  .lit-card-body { max-height: 260px; overflow-y: auto; overflow-x: hidden; border-top: 1px solid var(--border); }
+  .lit-title { font-size: 13px; color: var(--text); line-height: 1.4; word-break: break-word; overflow-wrap: anywhere; }
   .lit-title a { color: var(--accent); text-decoration: none; font-weight: 600; }
   .lit-title a:hover { text-decoration: underline; }
   .lit-note-panel {
-    margin-top: 7px; padding: 8px 10px; background: var(--bg); border-radius: 6px;
-    font-size: 12px; color: var(--text); line-height: 1.5;
+    margin-top: 6px; padding: 7px 9px; background: var(--bg); border-radius: 6px;
+    font-size: 11.5px; color: var(--text); line-height: 1.5;
     white-space: pre-wrap; word-break: break-word;
   }
 
@@ -2782,24 +2794,39 @@ async function deleteNote(row) {
 
 function renderLiterature() {
   const content = document.getElementById('content');
+  // Only (re)build the toolbar on first entry into this view, so the search
+  // input's DOM node — and therefore focus/caret — survives re-renders
+  // triggered by its own oninput.
+  if (!document.getElementById('lit-toolbar')) {
+    const projectOpts = ['', ...allSheets.map(s => s.name)]
+      .map(p => `<option value="${escHtml(p)}">${p || 'All Projects'}</option>`).join('');
+    content.innerHTML = `
+      <div class="notes-toolbar" id="lit-toolbar">
+        <select id="l-filter-project" onchange="renderLiteratureCards()">${projectOpts}</select>
+        <input id="l-search" type="search" class="lit-search-input" placeholder="🔍 Search titles…" oninput="renderLiteratureCards()">
+        <button id="lit-export-btn" onclick="exportBib()"
+                style="padding:7px 12px;background:none;border:1.5px solid var(--border);border-radius:8px;
+                       font-size:12px;cursor:pointer;color:var(--text-muted);white-space:nowrap;margin-left:auto">
+          ⬇ Export .bib
+        </button>
+      </div>
+      <div id="lit-cards-wrap"></div>
+    `;
+  }
+  renderLiteratureCards();
+}
+
+function renderLiteratureCards() {
+  const wrap = document.getElementById('lit-cards-wrap');
+  if (!wrap) return;
   const projectFilter = document.getElementById('l-filter-project')?.value || '';
+  const searchQ = (document.getElementById('l-search')?.value || '').trim().toLowerCase();
   let items = allLiterature;
   if (projectFilter) items = items.filter(l => l.project === projectFilter);
-
-  const projectOpts = ['', ...allSheets.map(s => s.name)]
-    .map(p => `<option value="${escHtml(p)}" ${p===projectFilter?'selected':''}>${p||'All Projects'}</option>`).join('');
-
-  const toolbar = `<div class="notes-toolbar">
-    <select id="l-filter-project" onchange="renderLiterature()">${projectOpts}</select>
-    <button id="lit-export-btn" onclick="exportBib()"
-            style="padding:7px 12px;background:none;border:1.5px solid var(--border);border-radius:8px;
-                   font-size:12px;cursor:pointer;color:var(--text-muted);white-space:nowrap;margin-left:auto">
-      ⬇ Export .bib
-    </button>
-  </div>`;
+  if (searchQ) items = items.filter(l => (l.title || '').toLowerCase().includes(searchQ));
 
   if (!items.length) {
-    content.innerHTML = toolbar + '<div class="empty">No literature yet. Click "+ Add Reference" to create one.</div>';
+    wrap.innerHTML = `<div class="empty">${allLiterature.length ? 'No matching references.' : 'No literature yet. Click "+ Add Reference" to create one.'}</div>`;
     return;
   }
 
@@ -2817,17 +2844,17 @@ function renderLiterature() {
     const rows = refs.map(l => litRow(l)).join('');
     return `<div class="lit-project-card" style="border-color:${fd.stroke}">
       <div class="lit-card-header" style="background:${fd.empty}">
-        <div class="lit-card-flower">${flowerSVG(project, bloom, 44)}</div>
+        <div class="lit-card-flower">${flowerSVG(project, bloom, 32)}</div>
         <div class="lit-card-heading">
           <div class="lit-card-title" style="color:${fd.center}">${escHtml(project)}</div>
           <div class="lit-card-count" style="color:${fd.stroke}">${refs.length} reference${refs.length !== 1 ? 's' : ''}</div>
         </div>
       </div>
-      <table class="task-table"><tbody>${rows}</tbody></table>
+      <div class="lit-card-body"><table class="task-table"><tbody>${rows}</tbody></table></div>
     </div>`;
   }).join('');
 
-  content.innerHTML = toolbar + `<div class="lit-cards">${cards}</div>`;
+  wrap.innerHTML = `<div class="lit-cards">${cards}</div>`;
 }
 
 function litRow(l) {
