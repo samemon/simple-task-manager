@@ -43,12 +43,14 @@ DATA_CACHE_TTL = float('inf')  # never auto-expire; use /api/sync to force refre
 
 NOTES_SHEET    = "_notes"
 COLLABS_SHEET  = "_collabs"
-META_SHEETS    = {NOTES_SHEET, COLLABS_SHEET}
+LIT_SHEET      = "_literature"
+META_SHEETS    = {NOTES_SHEET, COLLABS_SHEET, LIT_SHEET}
 NOTE_COLORS    = ["#FFF9C4", "#C8E6C9", "#BBDEFB", "#F8BBD0", "#E1BEE7", "#FFE0B2"]
 IMPORTANCES    = ["High", "Medium", "Low"]
 PURPOSES       = ["Design", "Writing", "Analysis", "Planning", "Other"]
 NOTE_HEADERS   = ["Project", "Note", "Importance", "Purpose", "Color", "Created", "Modified"]
 COLLAB_HEADERS = ["Project", "Name", "Role"]
+LIT_HEADERS    = ["Project", "Title", "Link", "Authors", "Year", "Notes", "Created", "Modified"]
 
 app = Flask(__name__)
 _sheet_cache  = None
@@ -57,6 +59,7 @@ _ws_cache     = {}    # {title: worksheet object}
 _data_cache   = {}    # {title: [rows]} — project sheets only
 _notes_cache  = []    # rows from _notes sheet
 _collabs_cache= []    # rows from _collabs sheet
+_lit_cache    = []    # rows from _literature sheet
 _data_cache_ts= 0.0
 
 
@@ -64,10 +67,11 @@ _data_cache_ts= 0.0
 
 class _LocalWS:
     """Mimics a gspread Worksheet so mutation routes work unchanged in local mode."""
-    def __init__(self, title, is_notes=False, is_collabs=False):
+    def __init__(self, title, is_notes=False, is_collabs=False, is_lit=False):
         self.title     = title
         self._notes    = is_notes
         self._collabs  = is_collabs
+        self._lit      = is_lit
 
     def _row_num(self, range_name):
         m = re.search(r'\d+', range_name)
@@ -81,6 +85,9 @@ class _LocalWS:
         elif self._collabs:
             while len(_collabs_cache) < row: _collabs_cache.append([])
             _collabs_cache[row - 1] = list(values[0])
+        elif self._lit:
+            while len(_lit_cache) < row: _lit_cache.append([])
+            _lit_cache[row - 1] = list(values[0])
         else:
             patch_cache(self.title, row, values[0])
         _local_save()
@@ -88,12 +95,14 @@ class _LocalWS:
     def append_row(self, values):
         if self._notes:    _notes_cache.append(list(values))
         elif self._collabs: _collabs_cache.append(list(values))
+        elif self._lit:     _lit_cache.append(list(values))
         else: _data_cache.setdefault(self.title, []).append(list(values))
         _local_save()
 
     def delete_rows(self, row):
         target = (_notes_cache if self._notes else
                   _collabs_cache if self._collabs else
+                  _lit_cache if self._lit else
                   _data_cache.get(self.title, []))
         if 0 < row <= len(target):
             target.pop(row - 1)
@@ -101,20 +110,22 @@ class _LocalWS:
 
 
 def _local_load():
-    global _data_cache, _notes_cache, _collabs_cache, _data_cache_ts, _ws_cache
+    global _data_cache, _notes_cache, _collabs_cache, _lit_cache, _data_cache_ts, _ws_cache
     if os.path.exists(LOCAL_DATA_FILE):
         with open(LOCAL_DATA_FILE) as f:
             d = json.load(f)
         _data_cache    = d.get("projects", {})
         _notes_cache   = d.get("notes",    [])
         _collabs_cache = d.get("collabs",  [])
+        _lit_cache     = d.get("literature", [])
     _data_cache_ts = time.time()
     _ws_cache = {k: _LocalWS(k) for k in _data_cache}
 
 
 def _local_save():
     with open(LOCAL_DATA_FILE, "w") as f:
-        json.dump({"projects": _data_cache, "notes": _notes_cache, "collabs": _collabs_cache}, f, indent=2)
+        json.dump({"projects": _data_cache, "notes": _notes_cache, "collabs": _collabs_cache,
+                    "literature": _lit_cache}, f, indent=2)
 
 
 # ── Google Sheets helpers ─────────────────────────────────────────────────
@@ -129,8 +140,8 @@ def get_sheet():
 
 
 def _fetch_all():
-    """Fetch all sheets in one pass; populate project, notes, and collab caches."""
-    global _ws_cache, _data_cache, _notes_cache, _collabs_cache, _data_cache_ts
+    """Fetch all sheets in one pass; populate project, notes, collab, and literature caches."""
+    global _ws_cache, _data_cache, _notes_cache, _collabs_cache, _lit_cache, _data_cache_ts
     if LOCAL_MODE:
         _local_load()
         return
@@ -146,6 +157,7 @@ def _fetch_all():
                 _data_cache   = {k: v for k, v in raw.items() if k not in META_SHEETS}
                 _notes_cache  = raw.get(NOTES_SHEET,  [])
                 _collabs_cache= raw.get(COLLABS_SHEET, [])
+                _lit_cache    = raw.get(LIT_SHEET, [])
                 _data_cache_ts = time.time()
                 return
             except gspread.exceptions.APIError as e:
@@ -176,6 +188,13 @@ def get_collabs_data():
     return _collabs_cache
 
 
+def get_literature_data():
+    if _data_cache_ts > 0 and (time.time() - _data_cache_ts) < DATA_CACHE_TTL:
+        return _lit_cache
+    _fetch_all()
+    return _lit_cache
+
+
 def get_worksheet(title):
     if LOCAL_MODE:
         if title not in _data_cache:
@@ -192,17 +211,21 @@ def get_worksheet(title):
 
 def ensure_meta_ws(title, headers):
     """Get or lazily create a meta worksheet."""
-    global _notes_cache, _collabs_cache
+    global _notes_cache, _collabs_cache, _lit_cache
     if LOCAL_MODE:
         is_n = (title == NOTES_SHEET)
         is_c = (title == COLLABS_SHEET)
+        is_l = (title == LIT_SHEET)
         if is_n and not _notes_cache:
             _notes_cache = [headers]
             _local_save()
         elif is_c and not _collabs_cache:
             _collabs_cache = [headers]
             _local_save()
-        return _LocalWS(title, is_notes=is_n, is_collabs=is_c)
+        elif is_l and not _lit_cache:
+            _lit_cache = [headers]
+            _local_save()
+        return _LocalWS(title, is_notes=is_n, is_collabs=is_c, is_lit=is_l)
     if title not in _ws_cache:
         _fetch_all()
     if title not in _ws_cache:
@@ -214,14 +237,17 @@ def ensure_meta_ws(title, headers):
             _notes_cache = [headers]
         elif title == COLLABS_SHEET:
             _collabs_cache = [headers]
+        elif title == LIT_SHEET:
+            _lit_cache = [headers]
     return _ws_cache[title]
 
 
 def invalidate_cache():
-    global _data_cache, _notes_cache, _collabs_cache, _data_cache_ts
+    global _data_cache, _notes_cache, _collabs_cache, _lit_cache, _data_cache_ts
     _data_cache    = {}
     _notes_cache   = []
     _collabs_cache = []
+    _lit_cache     = []
     _data_cache_ts = 0.0
 
 
@@ -297,6 +323,25 @@ def parse_collabs(rows):
             "role":    row[2].strip() if len(row) > 2 else "",
         })
     return collabs
+
+
+def parse_literature(rows):
+    lit = []
+    for i, row in enumerate(rows[1:], start=2):
+        if len(row) < 2 or not row[1].strip():
+            continue
+        lit.append({
+            "row":      i,
+            "project":  row[0].strip() if len(row) > 0 else "",
+            "title":    row[1].strip(),
+            "link":     row[2].strip() if len(row) > 2 else "",
+            "authors":  row[3].strip() if len(row) > 3 else "",
+            "year":     row[4].strip() if len(row) > 4 else "",
+            "notes":    row[5].strip() if len(row) > 5 else "",
+            "created":  row[6].strip() if len(row) > 6 else "",
+            "modified": row[7].strip() if len(row) > 7 else "",
+        })
+    return lit
 
 
 # ── API ──────────────────────────────────────────────────────────────────────
@@ -495,6 +540,64 @@ def api_delete_collaborator(row):
     return jsonify({"ok": True})
 
 
+# ── Literature API ─────────────────────────────────────────────────────────
+
+@app.route("/api/literature")
+def api_literature():
+    project = request.args.get("project")
+    lit = parse_literature(get_literature_data())
+    if project:
+        lit = [l for l in lit if l["project"] == project]
+    return jsonify(lit)
+
+
+@app.route("/api/literature", methods=["POST"])
+def api_add_literature():
+    data = request.get_json(silent=True) or {}
+    if not data.get("title") or not data.get("project"):
+        return jsonify({"error": "project and title required"}), 400
+    ws = ensure_meta_ws(LIT_SHEET, LIT_HEADERS)
+    today = _today()
+    ws.append_row([
+        data["project"], data["title"], data.get("link", ""),
+        data.get("authors", ""), data.get("year", ""), data.get("notes", ""),
+        today, today,
+    ])
+    invalidate_cache()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/literature/<int:row>", methods=["PUT"])
+def api_update_literature(row):
+    data = request.get_json(silent=True) or {}
+    ws = ensure_meta_ws(LIT_SHEET, LIT_HEADERS)
+    rows = get_literature_data()
+    current = list(rows[row - 1]) if row - 1 < len(rows) else []
+    while len(current) < 8:
+        current.append("")
+    updated = [
+        data.get("project", current[0]),
+        data.get("title",   current[1]),
+        data.get("link",    current[2]),
+        data.get("authors", current[3]),
+        data.get("year",    current[4]),
+        data.get("notes",   current[5]),
+        current[6],   # created unchanged
+        _today(),     # modified = today
+    ]
+    ws.update(range_name=f"A{row}:H{row}", values=[updated])
+    invalidate_cache()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/literature/<int:row>", methods=["DELETE"])
+def api_delete_literature(row):
+    ws = ensure_meta_ws(LIT_SHEET, LIT_HEADERS)
+    ws.delete_rows(row)
+    invalidate_cache()
+    return jsonify({"ok": True})
+
+
 # ── Sync API ──────────────────────────────────────────────────────────────────
 
 @app.route("/api/sync", methods=["POST"])
@@ -627,14 +730,14 @@ HTML = r"""<!DOCTYPE html>
   .sheet-item.dragging { opacity: 0.4; }
   .sheet-item.drag-over { outline: 1px dashed rgba(255,255,255,0.35); border-radius: 6px; }
   .sidebar-sep { height: 1px; background: rgba(255,255,255,0.06); margin: 8px 16px; }
-  #show-all, #upcoming-btn, #notes-btn, #collabs-btn, #stats-btn, #procrastinate-btn, #gardone-btn {
+  #show-all, #upcoming-btn, #notes-btn, #literature-btn, #collabs-btn, #stats-btn, #procrastinate-btn, #gardone-btn {
     padding: 9px 20px; cursor: pointer; font-size: 13px; color: var(--sidebar-text);
     margin: 1px 8px; border-radius: 6px; display: flex; align-items: center; gap: 8px;
   }
-  #show-all:hover, #upcoming-btn:hover, #notes-btn:hover, #collabs-btn:hover, #stats-btn:hover, #procrastinate-btn:hover, #gardone-btn:hover {
+  #show-all:hover, #upcoming-btn:hover, #notes-btn:hover, #literature-btn:hover, #collabs-btn:hover, #stats-btn:hover, #procrastinate-btn:hover, #gardone-btn:hover {
     background: var(--sidebar-hover); color: #fff;
   }
-  #show-all.active, #upcoming-btn.active, #notes-btn.active, #collabs-btn.active, #stats-btn.active, #procrastinate-btn.active, #gardone-btn.active {
+  #show-all.active, #upcoming-btn.active, #notes-btn.active, #literature-btn.active, #collabs-btn.active, #stats-btn.active, #procrastinate-btn.active, #gardone-btn.active {
     background: rgba(90,103,216,0.35); color: var(--sidebar-active); font-weight: 600;
   }
   .deadline-pill {
@@ -826,6 +929,24 @@ HTML = r"""<!DOCTYPE html>
   .note-action-btn:hover { background: var(--border); color: var(--text); }
   .note-delete-btn:hover { background: #FED7D7; color: #C53030; }
 
+  /* ── Literature ── */
+  .lit-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; }
+  .lit-card {
+    background: var(--surface); border-radius: 10px; padding: 16px 16px 12px;
+    border-left: 5px solid var(--accent); box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+    transition: box-shadow 0.15s;
+  }
+  .lit-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.11); }
+  .lit-project { font-size: 10px; font-weight: 700; color: var(--text-muted);
+                  text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 6px; }
+  .lit-title { font-size: 14px; font-weight: 700; margin-bottom: 4px; word-break: break-word; }
+  .lit-title a { color: var(--accent); text-decoration: none; }
+  .lit-title a:hover { text-decoration: underline; }
+  .lit-meta { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; }
+  .lit-notes { font-size: 12px; color: var(--text); line-height: 1.5; margin-bottom: 10px;
+               white-space: pre-wrap; word-break: break-word; }
+  .lit-footer { display: flex; justify-content: flex-end; gap: 4px; }
+
   /* ── Inline project extras ── */
   .project-extras { margin-top: 10px; margin-bottom: 6px; display: flex; flex-direction: column; gap: 8px; }
   .project-extras-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
@@ -944,6 +1065,36 @@ HTML = r"""<!DOCTYPE html>
   }
   .status-option:hover { background: var(--bg); }
   .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+  /* Plan-for-today picker */
+  .today-picker {
+    position: absolute; background: var(--surface); border: 1.5px solid var(--border);
+    border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+    z-index: 50; width: 280px; display: none; padding: 8px;
+  }
+  .today-picker.open { display: block; }
+  .today-picker input {
+    width: 100%; padding: 6px 10px; border: 1.5px solid var(--border); border-radius: 6px;
+    font-size: 12px; font-family: inherit; outline: none; background: var(--bg); color: var(--text);
+    margin-bottom: 6px; box-sizing: border-box;
+  }
+  .today-picker-list { max-height: 220px; overflow-y: auto; }
+  .today-picker-item { padding: 7px 8px; font-size: 12px; cursor: pointer; border-radius: 6px; }
+  .today-picker-item:hover { background: var(--bg); }
+  .today-picker-item .tpi-sheet { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+  .today-picker-empty { padding: 10px; font-size: 12px; color: var(--text-muted); text-align: center; }
+
+  /* Plan-for-today section */
+  .today-plan {
+    border: 1.5px dashed var(--border); border-radius: 12px; padding: 14px;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .today-plan.drag-over { border-color: var(--accent); background: var(--accent-light); }
+  .today-plan .task-table { box-shadow: none; }
+  .today-plan-empty { font-size: 12px; color: var(--text-muted); text-align: center; padding: 16px 8px; }
+  .plan-add-btn { float: right; opacity: 1; font-size: 15px; font-weight: 700; margin-top: -3px; }
+  .task-row[draggable="true"] { cursor: grab; }
+  .task-row.dragging-task { opacity: 0.4; }
 
   /* ── Garden / flower cards ── */
   .garden-grid { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 28px; }
@@ -1244,6 +1395,7 @@ HTML = r"""<!DOCTYPE html>
   <div id="show-all" class="active" onclick="selectSheet(null)">All Projects</div>
   <div id="upcoming-btn" onclick="selectUpcoming()">📅 Upcoming</div>
   <div id="notes-btn" onclick="selectView('notes')">📝 Notes</div>
+  <div id="literature-btn" onclick="selectView('literature')">📚 Literature</div>
   <div id="collabs-btn" onclick="selectView('collaborators')">👥 Collaborators</div>
   <div id="stats-btn"         onclick="selectView('stats')">📊 Stats</div>
   <div id="gardone-btn"       onclick="selectView('gardone')">🌸 GarDone</div>
@@ -1398,6 +1550,43 @@ HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Literature modal -->
+<div class="modal-overlay" id="lit-modal">
+  <div class="modal">
+    <h3 id="lit-modal-title">Add Reference</h3>
+    <div class="field">
+      <label>Project</label>
+      <select id="l-project"></select>
+    </div>
+    <div class="field">
+      <label>Title</label>
+      <input id="l-title" type="text" placeholder="Paper title…">
+    </div>
+    <div class="field">
+      <label>Link <span style="font-weight:400;text-transform:none">(optional)</span></label>
+      <input id="l-link" type="url" placeholder="https://…">
+    </div>
+    <div class="field" style="display:flex;gap:14px">
+      <div style="flex:1">
+        <label>Authors <span style="font-weight:400;text-transform:none">(optional)</span></label>
+        <input id="l-authors" type="text" placeholder="Smith, J., Doe, A.">
+      </div>
+      <div style="flex:0 0 90px">
+        <label>Year <span style="font-weight:400;text-transform:none">(optional)</span></label>
+        <input id="l-year" type="text" placeholder="2026">
+      </div>
+    </div>
+    <div class="field">
+      <label>Notes <span style="font-weight:400;text-transform:none">(optional)</span></label>
+      <textarea id="l-notes" rows="3" placeholder="Why this matters, key takeaway…"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeLitModal()">Cancel</button>
+      <button class="btn-save" onclick="saveLit()">Save</button>
+    </div>
+  </div>
+</div>
+
 <!-- Collaborator modal -->
 <div class="modal-overlay" id="collab-modal">
   <div class="modal" style="max-width:380px">
@@ -1446,6 +1635,12 @@ HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
+<!-- Plan-for-today picker -->
+<div class="today-picker" id="today-picker" onclick="event.stopPropagation()">
+  <input type="text" id="today-picker-search" placeholder="Search tasks…" oninput="renderTodayPickerList()">
+  <div class="today-picker-list" id="today-picker-list"></div>
+</div>
+
 <!-- Status picker -->
 <div class="status-select" id="status-picker">
   <div class="status-option" onclick="pickStatus('Not Started')">
@@ -1477,6 +1672,7 @@ function orderedSheets() {
 let allTasks   = {};
 let allNotes   = [];
 let allCollabs = [];
+let allLiterature = [];
 let activeSheet  = null;
 let activeFilter = 'all';
 let viewMode     = 'tasks';
@@ -1484,6 +1680,7 @@ let editTarget   = null;
 let modalMode    = 'add';
 let noteEditRow  = null;
 let selectedNoteColor = '#FFF9C4';
+let litEditRow   = null;
 let searchQuery = '';
 const selectedTasks  = new Set();  // "sheet::row"
 const NOTE_COLORS = ['#FFF9C4','#C8E6C9','#BBDEFB','#F8BBD0','#E1BEE7','#FFE0B2'];
@@ -1662,6 +1859,14 @@ const DEMO_DATA = {
     {row:47, project:"Diversity in Research",   name:"Lin Wei",         role:"Data Analyst"},
     {row:48, project:"Open Science Writing",    name:"Priya Sharma",    role:"Reviewer"},
   ],
+  literature: [
+    {row:2, project:"Research Overview", title:"Attention Is All You Need", link:"https://arxiv.org/abs/1706.03762",
+     authors:"Vaswani, A. et al.", year:"2017", notes:"Foundational transformer architecture — cite in related work.",
+     created:"10 Mar 2026", modified:"10 Mar 2026"},
+    {row:3, project:"Citation Analysis", title:"The Leiden Manifesto for research metrics", link:"https://www.nature.com/articles/520429a",
+     authors:"Hicks, D. et al.", year:"2015", notes:"Good framing for our metrics critique section.",
+     created:"2 Apr 2026", modified:"2 Apr 2026"},
+  ],
 };
 
 let demoMode = localStorage.getItem('demoMode') === '1';
@@ -1672,8 +1877,9 @@ async function toggleDemoMode(on) {
   document.getElementById('demo-banner').style.display = on ? 'flex' : 'none';
   // Reset project selection (names differ between real and demo) but keep current view
   activeSheet = null;
+  _todayPlanCache = null;
   if (viewMode === 'tasks') document.getElementById('topbar-title').textContent = 'All Projects';
-  await Promise.all([loadSheets(), loadTasks(true), loadNotes(), loadCollabs()]);
+  await Promise.all([loadSheets(), loadTasks(true), loadNotes(), loadCollabs(), loadLiterature()]);
   renderContent();
 }
 
@@ -1696,7 +1902,7 @@ async function init() {
       document.getElementById('refresh-btn').title = 'Reload from local storage';
     }
   }
-  await Promise.all([loadSheets(), loadTasks(), loadNotes(), loadCollabs()]);
+  await Promise.all([loadSheets(), loadTasks(), loadNotes(), loadCollabs(), loadLiterature()]);
 }
 
 async function loadSheets() {
@@ -1733,9 +1939,15 @@ async function loadCollabs() {
   allCollabs = await res.json();
 }
 
+async function loadLiterature() {
+  if (demoMode) { allLiterature = DEMO_DATA.literature.map(l => ({...l})); return; }
+  const res = await fetch('/api/literature');
+  allLiterature = await res.json();
+}
+
 async function syncAll() {
   if (demoMode) {
-    await Promise.all([loadSheets(), loadTasks(true), loadNotes(), loadCollabs()]);
+    await Promise.all([loadSheets(), loadTasks(true), loadNotes(), loadCollabs(), loadLiterature()]);
     renderContent(); return;
   }
   const btn = document.getElementById('refresh-btn');
@@ -1743,7 +1955,7 @@ async function syncAll() {
   btn.disabled = true;
   try {
     await fetch('/api/sync', { method: 'POST' });
-    await Promise.all([loadSheets(), loadTasks(true), loadNotes(), loadCollabs()]);
+    await Promise.all([loadSheets(), loadTasks(true), loadNotes(), loadCollabs(), loadLiterature()]);
     renderContent();
   } finally {
     btn.textContent = '↻ Sync';
@@ -1754,7 +1966,7 @@ async function syncAll() {
 // ── Sidebar ───────────────────────────────────────────────────────────────
 
 function setSidebarActive(id) {
-  ['show-all','upcoming-btn','notes-btn','collabs-btn','stats-btn','gardone-btn','procrastinate-btn'].forEach(i =>
+  ['show-all','upcoming-btn','notes-btn','literature-btn','collabs-btn','stats-btn','gardone-btn','procrastinate-btn'].forEach(i =>
     document.getElementById(i).className = (i === id ? 'active' : ''));
   document.querySelectorAll('.sheet-item').forEach(el => el.classList.remove('active'));
 }
@@ -1774,6 +1986,9 @@ function updateTopbar() {
     if (viewMode === 'notes') {
       btn.textContent = '+ Add Note';
       btn.onclick = () => openNoteModal(null);
+    } else if (viewMode === 'literature') {
+      btn.textContent = '+ Add Reference';
+      btn.onclick = () => openLitModal(null);
     } else if (viewMode === 'collaborators') {
       btn.textContent = '+ Add Collaborator';
       btn.onclick = () => openCollabModal();
@@ -1853,8 +2068,8 @@ function selectView(mode) {
   viewMode = mode;
   activeSheet = null;
   document.getElementById('topbar-title').textContent =
-    { notes:'Notes', collaborators:'Collaborators', procrastinate:'🐍 Procrastinate', stats:'📊 Stats', gardone:'🌸 GarDone' }[mode] || mode;
-  const sid = { notes:'notes-btn', collaborators:'collabs-btn', procrastinate:'procrastinate-btn', stats:'stats-btn', gardone:'gardone-btn' };
+    { notes:'Notes', literature:'📚 Literature', collaborators:'Collaborators', procrastinate:'🐍 Procrastinate', stats:'📊 Stats', gardone:'🌸 GarDone' }[mode] || mode;
+  const sid = { notes:'notes-btn', literature:'literature-btn', collaborators:'collabs-btn', procrastinate:'procrastinate-btn', stats:'stats-btn', gardone:'gardone-btn' };
   setSidebarActive(sid[mode] || null);
   updateTopbar();
   renderContent();
@@ -1865,6 +2080,7 @@ function renderContent() {
   if (viewMode !== 'procrastinate') cleanupProcrastinate();
   if (viewMode === 'upcoming')           renderUpcoming();
   else if (viewMode === 'notes')         renderNotes();
+  else if (viewMode === 'literature')    renderLiterature();
   else if (viewMode === 'collaborators') renderCollaborators();
   else if (viewMode === 'procrastinate') renderProcrastinate();
   else if (viewMode === 'stats')         renderStats();
@@ -2007,11 +2223,14 @@ function renderUpcoming() {
   const month = new Date(today); month.setDate(today.getDate() + 30);
 
   const groups = { overdue: [], today: [], week: [], month: [], later: [], none: [] };
+  const plan = getTodayPlan();
+  const planned = [];
 
   Object.entries(allTasks).forEach(([sheet, tasks]) => {
     tasks.forEach(t => {
       if (t.status === 'Completed') return;
       const item = { ...t, sheet };
+      if (plan.keys.includes(`${sheet}::${t.row}`)) planned.push(item);
       const d = parseDeadline(t.deadline);
       if (!d) { groups.none.push(item); return; }
       const dt = new Date(d); dt.setHours(0, 0, 0, 0);
@@ -2025,6 +2244,19 @@ function renderUpcoming() {
 
   const byDate = (a, b) => (parseDeadline(a.deadline) || 0) - (parseDeadline(b.deadline) || 0);
 
+  const planSection = `<div class="section today-plan"
+        ondragover="event.preventDefault();event.currentTarget.classList.add('drag-over')"
+        ondragleave="event.currentTarget.classList.remove('drag-over')"
+        ondrop="onDropToday(event)">
+      <div class="section-title" style="color:var(--today-color)">
+        📌 Plan for Today &mdash; ${planned.length} task${planned.length !== 1 ? 's' : ''}
+        <button class="icon-btn plan-add-btn" title="Add a task to today's plan" onclick="openTodayPicker(event)">+</button>
+      </div>
+      ${planned.length
+        ? `<table class="task-table"><tbody>${planned.sort(byDate).map(t => upcomingRow(t, true)).join('')}</tbody></table>`
+        : `<div class="today-plan-empty">Drag a task here from below, or click + to add one.</div>`}
+    </div>`;
+
   const sections = [
     { key: 'overdue', label: 'Overdue',      color: 'var(--overdue-color)' },
     { key: 'today',   label: 'Today',         color: 'var(--today-color)'  },
@@ -2034,7 +2266,7 @@ function renderUpcoming() {
     { key: 'none',    label: 'No Deadline',   color: 'var(--later-color)'  },
   ];
 
-  const html = sections
+  const restHtml = sections
     .filter(s => groups[s.key].length)
     .map(s => {
       const items = s.key === 'none' ? groups[s.key] : groups[s.key].sort(byDate);
@@ -2045,16 +2277,20 @@ function renderUpcoming() {
       </div>`;
     }).join('');
 
-  content.innerHTML = html || '<div class="empty">No upcoming tasks.</div>';
+  content.innerHTML = planSection + (restHtml || '<div class="empty">No upcoming tasks.</div>');
 }
 
-function upcomingRow(t) {
+function upcomingRow(t, pinned) {
   const pillClass = deadlinePillClass(parseDeadline(t.deadline));
   const deadlineHtml = t.deadline
     ? `<span class="deadline-pill ${pillClass}">${escHtml(t.deadline)}</span>`
     : '';
   const meta = [t.sheet, t.hours ? `⏱ ${t.hours}h` : ''].filter(Boolean).join('  ·  ');
-  return `<tr class="task-row">
+  const pinBtn = pinned
+    ? `<button class="icon-btn" title="Remove from today" onclick="removeFromTodayPlan('${jsStr(t.sheet)}',${t.row})">✕</button>`
+    : `<button class="icon-btn" title="Add to today" onclick="addToTodayPlan('${jsStr(t.sheet)}',${t.row})">📌</button>`;
+  return `<tr class="task-row" draggable="true" data-sheet="${escHtml(t.sheet)}" data-row="${t.row}"
+             ondragstart="onDragUpcomingTask(event)" ondragend="event.currentTarget.classList.remove('dragging-task')">
     <td style="width:100%">
       <div class="task-text">${escHtml(t.task)}</div>
       ${meta ? `<div class="task-meta">${escHtml(meta)}</div>` : ''}
@@ -2067,6 +2303,7 @@ function upcomingRow(t) {
       </span>
     </td>
     <td style="white-space:nowrap">
+      ${pinBtn}
       <button class="icon-btn" title="Edit" onclick="openEditModal('${jsStr(t.sheet)}',${t.row})">✏️</button>
       <button class="icon-btn" title="Delete" onclick="deleteTask('${jsStr(t.sheet)}',${t.row})">🗑</button>
     </td>
@@ -2151,7 +2388,106 @@ async function pickStatus(status) {
 
 document.addEventListener('click', () => {
   document.getElementById('status-picker').classList.remove('open');
+  document.getElementById('today-picker').classList.remove('open');
 });
+
+// ── Plan for today ───────────────────────────────────────────────────────
+
+let _todayPlanCache = null;
+
+function todayKey() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+function getTodayPlan() {
+  const storageKey = demoMode ? 'todayPlanDemo' : 'todayPlan';
+  if (_todayPlanCache && _todayPlanCache._storageKey === storageKey) return _todayPlanCache;
+  let raw;
+  try { raw = JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch (e) { raw = null; }
+  if (!raw || raw.date !== todayKey()) raw = { date: todayKey(), keys: [] };
+  raw._storageKey = storageKey;
+  _todayPlanCache = raw;
+  return raw;
+}
+
+function saveTodayPlan() {
+  const { _storageKey, ...plan } = _todayPlanCache;
+  localStorage.setItem(_storageKey, JSON.stringify(plan));
+}
+
+function addToTodayPlan(sheet, row) {
+  const plan = getTodayPlan();
+  const key = `${sheet}::${row}`;
+  if (!plan.keys.includes(key)) { plan.keys.push(key); saveTodayPlan(); }
+  renderContent();
+}
+
+function removeFromTodayPlan(sheet, row) {
+  const plan = getTodayPlan();
+  const key = `${sheet}::${row}`;
+  plan.keys = plan.keys.filter(k => k !== key);
+  saveTodayPlan();
+  renderContent();
+}
+
+function onDragUpcomingTask(e) {
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', JSON.stringify({ sheet: e.currentTarget.dataset.sheet, row: e.currentTarget.dataset.row }));
+  e.currentTarget.classList.add('dragging-task');
+}
+
+function onDropToday(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  let data;
+  try { data = JSON.parse(e.dataTransfer.getData('text/plain')); } catch (err) { return; }
+  if (!data || !data.sheet || !data.row) return;
+  addToTodayPlan(data.sheet, Number(data.row));
+}
+
+function openTodayPicker(e) {
+  e.stopPropagation();
+  const picker = document.getElementById('today-picker');
+  picker.classList.add('open');
+  document.getElementById('today-picker-search').value = '';
+  renderTodayPickerList();
+  const ph = picker.offsetHeight, pw = picker.offsetWidth;
+  const top = (e.clientY + 8 + ph > window.innerHeight - 8) ? e.clientY - ph - 8 : e.clientY + 8;
+  picker.style.top  = Math.max(8, top) + 'px';
+  picker.style.left = Math.min(e.clientX, window.innerWidth - pw - 8) + 'px';
+  setTimeout(() => document.getElementById('today-picker-search').focus(), 0);
+}
+
+function closeTodayPicker() {
+  document.getElementById('today-picker').classList.remove('open');
+}
+
+function renderTodayPickerList() {
+  const q = document.getElementById('today-picker-search').value.trim().toLowerCase();
+  const plan = getTodayPlan();
+  const list = document.getElementById('today-picker-list');
+  const items = [];
+  Object.entries(allTasks).forEach(([sheet, tasks]) => {
+    tasks.forEach(t => {
+      if (t.status === 'Completed') return;
+      const key = `${sheet}::${t.row}`;
+      if (plan.keys.includes(key)) return;
+      if (q && !t.task.toLowerCase().includes(q) && !sheet.toLowerCase().includes(q)) return;
+      items.push({ ...t, sheet });
+    });
+  });
+  if (!items.length) {
+    list.innerHTML = '<div class="today-picker-empty">No matching tasks.</div>';
+    return;
+  }
+  list.innerHTML = items.slice(0, 40).map(t => `
+    <div class="today-picker-item" onclick="addToTodayPlan('${jsStr(t.sheet)}',${t.row});closeTodayPicker();">
+      <div>${escHtml(t.task)}</div>
+      <div class="tpi-sheet">${escHtml(t.sheet)}${t.deadline ? ' &middot; ' + escHtml(t.deadline) : ''}</div>
+    </div>
+  `).join('');
+}
 
 // ── Modal ─────────────────────────────────────────────────────────────────
 
@@ -2433,6 +2769,145 @@ async function deleteNote(row) {
   await fetch(`/api/notes/${row}`, { method: 'DELETE' });
   await loadNotes();
   renderContent();
+}
+
+// ── Literature view ───────────────────────────────────────────────────────
+
+function renderLiterature() {
+  const content = document.getElementById('content');
+  const projectFilter = document.getElementById('l-filter-project')?.value || '';
+  let items = allLiterature;
+  if (projectFilter) items = items.filter(l => l.project === projectFilter);
+
+  const projectOpts = ['', ...allSheets.map(s => s.name)]
+    .map(p => `<option value="${escHtml(p)}" ${p===projectFilter?'selected':''}>${p||'All Projects'}</option>`).join('');
+
+  const toolbar = `<div class="notes-toolbar">
+    <select id="l-filter-project" onchange="renderLiterature()">${projectOpts}</select>
+    <button id="lit-export-btn" onclick="exportBib()"
+            style="padding:7px 12px;background:none;border:1.5px solid var(--border);border-radius:8px;
+                   font-size:12px;cursor:pointer;color:var(--text-muted);white-space:nowrap;margin-left:auto">
+      ⬇ Export .bib
+    </button>
+  </div>`;
+
+  if (!items.length) {
+    content.innerHTML = toolbar + '<div class="empty">No literature yet. Click "+ Add Reference" to create one.</div>';
+    return;
+  }
+
+  const byModified = (a, b) => (b.modified || '').localeCompare(a.modified || '') || (b.row - a.row);
+  const cards = [...items].sort(byModified).map(l => {
+    const titleHtml = l.link
+      ? `<a href="${escHtml(l.link)}" target="_blank" rel="noopener noreferrer">${escHtml(l.title)}</a>`
+      : escHtml(l.title);
+    const metaParts = [l.authors, l.year].filter(Boolean);
+    return `<div class="lit-card">
+      <div class="lit-project">${escHtml(l.project)}</div>
+      <div class="lit-title">${titleHtml}</div>
+      ${metaParts.length ? `<div class="lit-meta">${escHtml(metaParts.join(' · '))}</div>` : ''}
+      ${l.notes ? `<div class="lit-notes">${escHtml(l.notes)}</div>` : ''}
+      <div class="lit-footer">
+        <button class="note-action-btn" onclick="openLitModal(${l.row})">✏ Edit</button>
+        <button class="note-action-btn note-delete-btn" onclick="deleteLit(${l.row})">✕ Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  content.innerHTML = toolbar + `<div class="lit-grid">${cards}</div>`;
+}
+
+function openLitModal(row = null) {
+  if (typeof row !== 'number') row = null;  // guard against click-event being passed
+  litEditRow = row;
+  document.getElementById('lit-modal-title').textContent = row ? 'Edit Reference' : 'Add Reference';
+
+  const lpSel = document.getElementById('l-project');
+  lpSel.innerHTML = allSheets.map(s => `<option>${escHtml(s.name)}</option>`).join('');
+
+  if (row) {
+    const l = allLiterature.find(x => x.row === row);
+    if (l) {
+      lpSel.value = l.project;
+      document.getElementById('l-title').value   = l.title   || '';
+      document.getElementById('l-link').value    = l.link    || '';
+      document.getElementById('l-authors').value = l.authors || '';
+      document.getElementById('l-year').value    = l.year    || '';
+      document.getElementById('l-notes').value   = l.notes   || '';
+    }
+  } else {
+    if (activeSheet) lpSel.value = activeSheet;
+    document.getElementById('l-title').value   = '';
+    document.getElementById('l-link').value    = '';
+    document.getElementById('l-authors').value = '';
+    document.getElementById('l-year').value    = '';
+    document.getElementById('l-notes').value   = '';
+  }
+  document.getElementById('lit-modal').classList.add('open');
+}
+
+function closeLitModal() {
+  document.getElementById('lit-modal').classList.remove('open');
+}
+
+async function saveLit() {
+  if (guardDemo()) { closeLitModal(); return; }
+  const project = document.getElementById('l-project').value;
+  const title   = document.getElementById('l-title').value.trim();
+  const link    = document.getElementById('l-link').value.trim();
+  const authors = document.getElementById('l-authors').value.trim();
+  const year    = document.getElementById('l-year').value.trim();
+  const notes   = document.getElementById('l-notes').value.trim();
+  if (!title) { alert('Please add a title.'); return; }
+  const body = { project, title, link, authors, year, notes };
+  const url    = litEditRow ? `/api/literature/${litEditRow}` : '/api/literature';
+  const method = litEditRow ? 'PUT' : 'POST';
+  const res = await fetch(url, {
+    method, headers: {'Content-Type':'application/json'}, body: JSON.stringify(body)
+  });
+  if (!res.ok) { alert('Failed to save reference. Check the server log.'); return; }
+  closeLitModal();
+  await loadLiterature();
+  renderContent();
+}
+
+async function deleteLit(row) {
+  if (guardDemo()) return;
+  if (!confirm('Delete this reference?')) return;
+  await fetch(`/api/literature/${row}`, { method: 'DELETE' });
+  await loadLiterature();
+  renderContent();
+}
+
+function bibEscape(s) {
+  return String(s || '').replace(/[{}]/g, '').replace(/[\r\n]+/g, ' ');
+}
+
+function bibKey(l) {
+  let base = '';
+  if (l.authors) base = l.authors.split(',')[0].trim().split(/\s+/).pop().replace(/[^A-Za-z]/g, '');
+  if (!base) base = (l.title || 'ref').split(/\s+/)[0].replace(/[^A-Za-z]/g, '');
+  return `${base || 'ref'}${l.year || ''}_${l.row}`;
+}
+
+function toBibEntry(l) {
+  const fields = [`  title = {${bibEscape(l.title)}}`];
+  if (l.authors) fields.push(`  author = {${bibEscape(l.authors)}}`);
+  if (l.year)    fields.push(`  year = {${bibEscape(l.year)}}`);
+  if (l.link)    fields.push(`  url = {${bibEscape(l.link)}}`);
+  if (l.notes)   fields.push(`  note = {${bibEscape(l.notes)}}`);
+  return `@misc{${bibKey(l)},\n${fields.join(',\n')}\n}`;
+}
+
+function exportBib() {
+  const projectFilter = document.getElementById('l-filter-project')?.value || '';
+  const items = projectFilter ? allLiterature.filter(l => l.project === projectFilter) : allLiterature;
+  if (!items.length) { alert('No literature entries to export.'); return; }
+  const bib = items.map(toBibEntry).join('\n\n');
+  const a = document.createElement('a');
+  a.href = 'data:application/x-bibtex;charset=utf-8,' + encodeURIComponent(bib);
+  a.download = (projectFilter || 'all-literature') + '.bib';
+  a.click();
 }
 
 // ── Collaborators view ────────────────────────────────────────────────────

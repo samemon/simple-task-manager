@@ -48,6 +48,7 @@ All mutation routes call methods on a worksheet object (`ws.update(...)`, `ws.ap
 _data_cache   = {}   # {project_name: [rows]}
 _notes_cache  = []   # rows from _notes sheet
 _collabs_cache= []   # rows from _collabs sheet
+_lit_cache    = []   # rows from _literature sheet
 _ws_cache     = {}   # {title: worksheet object or _LocalWS}
 DATA_CACHE_TTL = float('inf')  # never auto-expire
 ```
@@ -55,7 +56,7 @@ DATA_CACHE_TTL = float('inf')  # never auto-expire
 **Never read from Sheets on every request.** Instead:
 - Mutations call `ws.update/append_row/delete_rows` then `patch_cache()` or `invalidate_cache()`
 - `patch_cache(sheet, row, values)` — updates a single row in `_data_cache` without a network read (use after task edits)
-- `invalidate_cache()` — zeroes all caches (use after notes/collabs mutations, which need a full re-read)
+- `invalidate_cache()` — zeroes all caches (use after notes/collabs/literature mutations, which need a full re-read)
 - The only full re-fetch is `_fetch_all()`, triggered by `GET /api/sync`
 
 ### Row numbering
@@ -79,6 +80,10 @@ Sheets rows are **1-indexed**. Row 1 is always the header row. `parse_tasks()` s
 | GET | `/api/collaborators?project=X` | All collaborators |
 | POST | `/api/collaborators` | Add collaborator |
 | DELETE | `/api/collaborators/<row>` | Remove collaborator |
+| GET | `/api/literature?project=X` | All literature references (or filtered) |
+| POST | `/api/literature` | Add reference — body: `{project, title, link, authors, year, notes}` |
+| PUT | `/api/literature/<row>` | Edit reference |
+| DELETE | `/api/literature/<row>` | Delete reference |
 | POST | `/api/projects` | Create project (sheet tab) |
 | DELETE | `/api/projects/<name>` | Delete project |
 | POST | `/api/sync` | Force full re-fetch from Sheets |
@@ -96,9 +101,10 @@ Each project tab: columns A–F
 |---|---|---|---|---|---|
 | Deadline | Task | Hours | Status | Completed Date | Assignee |
 
-Two hidden meta-tabs (never delete or rename):
+Three hidden meta-tabs (never delete or rename):
 - `_notes` — columns: Project, Note, Importance, Purpose, Color, Created, Modified
 - `_collabs` — columns: Project, Name, Role
+- `_literature` — columns: Project, Title, Link, Authors, Year, Notes, Created, Modified
 
 ---
 
@@ -110,8 +116,9 @@ allSheets  = []   // from /api/sheets
 allTasks   = {}   // {projectName: [taskObjects]}
 allNotes   = []   // flat array of note objects
 allCollabs = []   // flat array of collab objects
+allLiterature = [] // flat array of literature reference objects
 activeSheet  = null   // null = "All Projects"
-viewMode     = 'tasks' | 'upcoming' | 'notes' | 'collaborators' | 'stats' | 'procrastinate' | 'gardone'
+viewMode     = 'tasks' | 'upcoming' | 'notes' | 'literature' | 'collaborators' | 'stats' | 'procrastinate' | 'gardone'
 demoMode     = bool  // true = use DEMO_DATA instead of API
 _projectOrder = string[] | null  // custom sidebar order from localStorage
 ```
@@ -122,6 +129,7 @@ renderContent()          ← always calls updateTopbar() first
   ├── renderTasks()      — task list + garden view
   ├── renderUpcoming()   — deadline-grouped tasks
   ├── renderNotes()      — note cards
+  ├── renderLiterature() — literature reference cards, per-project filter, .bib export
   ├── renderCollaborators()
   ├── renderStats()
   ├── renderGarDone()    — botanical specimen view of completed tasks
@@ -193,8 +201,10 @@ Five CSS variable sets in `THEMES` object. `applyTheme(name)` writes all `--` va
 - Search: real-time filter across all projects
 - Export CSV: current project or all projects
 - Upcoming view: tasks grouped Overdue / Today / This Week / This Month / Later
+- Plan for Today: pinned section above Overdue in the Upcoming view — drag any task row onto it, or click its `+` to search-and-add a task, to build a daily working list independent of deadline. Stored client-side (`localStorage`), resets automatically each calendar day
 - Stats view: overall %, hours logged, by-status breakdown, per-project bars
 - Notes: rich text editor (bold/italic/underline/bullets/numbered lists), title, font family (5), font size; importance + purpose tags; color swatches; sorted newest-first
+- Literature: per-project reference list (title, clickable link, authors, year, plain-text notes); add/edit/delete via modal; project filter dropdown; client-side `.bib` export (per-project or all) for import into Zotero/reference managers
 - Collaborators: add (comma-separated for bulk), delete, assignable to tasks
 - Flower progress visualization: per-project SVG flower, one petal per task
 - GarDone tab: botanical specimen view of all completed tasks, parchment aesthetic
@@ -263,6 +273,7 @@ These map directly to CSS classes (`imp-High`, `pur-Design`, etc.) — adding ne
 | `sidebarWidth` | integer px | sidebar resize handler |
 | `projectOrder` | JSON array of project names | sidebar drag-to-reorder |
 | `demoMode` | `"1"` \| `"0"` | `toggleDemoMode()` |
+| `todayPlan` / `todayPlanDemo` | `{date: "YYYY-MM-DD", keys: ["sheet::row", ...]}` | `saveTodayPlan()` — the `Demo` variant is used while `demoMode` is on, so pins don't bleed between real and demo data; a stored `date` other than today is discarded on next read |
 
 ## CSS architecture
 
@@ -274,11 +285,11 @@ Note badge classes: `imp-High`, `imp-Medium`, `imp-Low`, `pur-Design`, etc.
 
 ## Demo mode architecture
 
-`DEMO_DATA` is a JS constant (baked into the HTML string) containing 14 projects, 52 tasks, 47 collaborators, and 2 notes — matching the rough scale of real data.
+`DEMO_DATA` is a JS constant (baked into the HTML string) containing 14 projects, 52 tasks, 47 collaborators, 2 notes, and 2 literature references — matching the rough scale of real data.
 
 `demoMode` is read from `localStorage` on startup. When true:
 - `loadSheets/loadTasks/loadNotes/loadCollabs` return shallow copies of `DEMO_DATA` instead of hitting the API
-- All mutation functions (`saveModal`, `deleteTask`, `pickStatus`, `bulkMark`, `bulkDelete`, `saveNote`, `deleteNote`, `saveCollab`, `deleteCollab`, `saveNewProject`, `deleteProject`) call `guardDemo()` at the top and return early — nothing touches the real data
+- All mutation functions (`saveModal`, `deleteTask`, `pickStatus`, `bulkMark`, `bulkDelete`, `saveNote`, `deleteNote`, `saveLit`, `deleteLit`, `saveCollab`, `deleteCollab`, `saveNewProject`, `deleteProject`) call `guardDemo()` at the top and return early — nothing touches the real data
 - `syncAll()` re-reads from `DEMO_DATA` instead of calling `/api/sync`
 
 `toggleDemoMode(on)` resets `activeSheet` to null (project names differ between real and demo) but preserves `viewMode`.
