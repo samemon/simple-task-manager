@@ -217,7 +217,7 @@ Five CSS variable sets in `THEMES` object. `applyTheme(name)` writes all `--` va
 - Bulk status change: checkbox-select multiple tasks, apply status to all
 - Search: real-time filter across all projects
 - Export CSV: current project or all projects
-- Upcoming view: a **weekly planner board** (a rolling 7-day window starting **today**, horizontally scrollable, prev/next-week nav + a "Today" reset, today's column highlighted and labelled "Today"; each column scrolls vertically) over a **backlog** of all incomplete tasks grouped Overdue / Today / This Week / This Month / Later. Drag a backlog task onto a day to plan it, drag a plan card between days to move it, or use a day's `+` picker / a backlog row's 📌 (plan for today). Each plan card shows a **priority rank** with ▲▼ to reorder, and an **estimated-hours** input; per-day and week hour totals are summed in the headers. Plans are stored server-side in `_plan` by explicit date, so nothing disappears at midnight.
+- Upcoming view: a **weekly planner board** (a rolling 7-day window starting **today**, horizontally scrollable, prev/next-week nav + a "Today" reset, today's column highlighted and labelled "Today"; each column scrolls vertically) over a **backlog** of all incomplete tasks grouped Overdue / Today / This Week / This Month / Later. Drag a backlog task onto a day to plan it, drag a plan card between days to move it, or use a day's `+` picker / a backlog row's 📌 (plan for today). Each plan card shows a **priority rank** with ▲▼ to reorder, a **status badge** (click → status picker; changing it updates the underlying task everywhere), and an **estimated-hours** input (prefilled from the task's own estimate on add). Per-day and week hour totals are summed in the headers. Plans are stored server-side in `_plan` by explicit date, so nothing disappears at midnight. **Auto-roll**: on load / entering the view, any plan entry whose day has passed and whose task isn't `Completed` is moved forward to today (`maybeRollPlans()`); completed entries stay put as a record, and entries whose task was deleted are left alone.
 - Offline / dual sync: works with no internet off the local mirror; edits journal and replay to Google Sheets on reconnect. A topbar pill shows **Synced / Offline (N pending) / Syncing**; the **Sync** button pushes the journal.
 - Stats view: overall %, hours logged, by-status breakdown, per-project bars
 - Notes: rich text editor (bold/italic/underline/bullets/numbered lists), title, font family (5), font size; importance + purpose tags; color swatches; sorted newest-first
@@ -298,7 +298,7 @@ The weekly plan is **no longer in localStorage** — it lives in the `_plan` she
 All colours go through CSS variables on `:root`. Never hardcode a colour in CSS.  
 Adding a new theme means adding an entry to the `THEMES` JS object — the CSS already uses the variables.
 
-Status badge classes follow the pattern `status-Not\ Started`, `status-In\ Progress`, etc. (spaces escaped in CSS).  
+Status badge classes are built by `statusCls(status)` = `'status-' + status.replace(/[^A-Za-z0-9]+/g,'-')`, so multi-word statuses become one hyphenated token: `.status-Not-Started`, `.status-In-Progress`, `.status-Pending`, `.status-Completed`. (Do **not** interpolate the raw status into the class — a space would split it into two classes and the pill styling would silently not apply.)  
 Note badge classes: `imp-High`, `imp-Medium`, `imp-Low`, `pur-Design`, etc.
 
 ## Demo mode architecture

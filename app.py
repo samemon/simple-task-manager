@@ -1111,10 +1111,10 @@ HTML = r"""<!DOCTYPE html>
     display: inline-block; padding: 3px 10px; border-radius: 12px;
     font-size: 11px; font-weight: 600; white-space: nowrap; cursor: pointer;
   }
-  .status-Pending     { background: var(--pending-bg); color: var(--pending-text); }
-  .status-In\ Progress{ background: var(--inprogress-bg); color: var(--inprogress-text); }
-  .status-Not\ Started{ background: var(--notstarted-bg); color: var(--notstarted-text); }
-  .status-Completed   { background: var(--completed-bg); color: var(--completed-text); }
+  .status-Pending      { background: var(--pending-bg); color: var(--pending-text); }
+  .status-In-Progress  { background: var(--inprogress-bg); color: var(--inprogress-text); }
+  .status-Not-Started  { background: var(--notstarted-bg); color: var(--notstarted-text); }
+  .status-Completed    { background: var(--completed-bg); color: var(--completed-text); }
 
   .icon-btn {
     background: none; border: none; cursor: pointer; padding: 4px 6px;
@@ -1461,6 +1461,8 @@ HTML = r"""<!DOCTYPE html>
   }
   .plan-card-task { flex: 1; color: var(--text); line-height: 1.35; word-break: break-word; }
   .plan-card-proj { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+  .plan-card-status { margin-top: 6px; }
+  .plan-card-status .status-badge { font-size: 10px; padding: 2px 8px; }
   .plan-card-row { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
   .plan-hours-input {
     width: 46px; padding: 2px 5px; border: 1px solid var(--border); border-radius: 5px;
@@ -2311,6 +2313,7 @@ async function init() {
   await Promise.all([loadSheets(), loadTasks(), loadNotes(), loadCollabs(), loadLiterature(), loadPlan()]);
   refreshSyncStatus();
   startSyncPolling();
+  maybeRollPlans();
 }
 
 async function loadSheets() {
@@ -2512,6 +2515,7 @@ function selectUpcoming() {
   setSidebarActive('upcoming-btn');
   updateTopbar();
   renderContent();  // use in-memory data, no network fetch
+  maybeRollPlans(); // roll any incomplete past-due plans forward to today (re-renders if it changes anything)
 }
 
 function selectView(mode) {
@@ -2721,9 +2725,12 @@ function planCardHtml(p, idx, total) {
   const t = taskFor(p.project, p.task_row);
   const done = t && t.status === 'Completed';
   const taskText = t ? t.task : '(task no longer exists)';
-  const sub = [p.project, t && t.deadline ? '📅 ' + t.deadline : '', t ? t.status : '']
-                .filter(Boolean).join(' · ');
+  const sub = [p.project, t && t.deadline ? '📅 ' + t.deadline : ''].filter(Boolean).join(' · ');
   const hoursVal = (p.hours != null ? String(p.hours) : '');
+  const statusBadge = t
+    ? `<span class="status-badge ${statusCls(t.status)}" title="Click to change status"
+             onclick="event.stopPropagation();openStatusPicker(event,'${jsStr(p.project)}',${p.task_row},'${jsStr(t.status)}')">${escHtml(t.status)}</span>`
+    : '';
   return `<div class="plan-card ${done ? 'done' : ''}" draggable="true" data-planrow="${p.row}"
       ondragstart="onPlanCardDragStart(event,${p.row})" ondragend="event.currentTarget.classList.remove('dragging-task')">
     <div class="plan-card-top">
@@ -2734,6 +2741,7 @@ function planCardHtml(p, idx, total) {
       </div>
       <button class="plan-mini-btn rm" title="Remove from plan" onclick="removePlan(${p.row})">✕</button>
     </div>
+    ${statusBadge ? `<div class="plan-card-status">${statusBadge}</div>` : ''}
     <div class="plan-card-row">
       <button class="plan-mini-btn up"   title="Higher priority" ${idx === 0 ? 'disabled' : ''} onclick="movePlanRank(${p.row},-1)">▲</button>
       <button class="plan-mini-btn down" title="Lower priority" ${idx === total - 1 ? 'disabled' : ''} onclick="movePlanRank(${p.row},1)">▼</button>
@@ -2796,7 +2804,7 @@ function upcomingRow(t) {
     </td>
     <td style="padding-right:8px">${deadlineHtml}</td>
     <td>
-      <span class="status-badge status-${escHtml(t.status)}"
+      <span class="status-badge ${statusCls(t.status)}"
             onclick="openStatusPicker(event,'${jsStr(t.sheet)}',${t.row},'${jsStr(t.status)}')">
         ${escHtml(t.status)}
       </span>
@@ -2838,7 +2846,7 @@ function taskRow(sheet, t) {
       ${metaParts.length ? `<div class="task-meta">${metaParts.join('  ')}</div>` : ''}
     </td>
     <td>
-      <span class="status-badge status-${escHtml(t.status)}"
+      <span class="status-badge ${statusCls(t.status)}"
             onclick="openStatusPicker(event,'${jsStr(sheet)}',${t.row},'${jsStr(t.status)}')">
         ${escHtml(t.status)}
       </span>
@@ -2966,6 +2974,43 @@ async function movePlanRank(row, dir) {
   });
   if (puts.length) await Promise.all(puts);
   await loadPlan(); refreshSyncStatus(); renderContent();
+}
+
+// Roll incomplete, past-due plan entries forward to today. An item planned for a
+// day that has passed and isn't marked Completed keeps showing up on "today" until
+// it's done. Completed items stay on their day as a record; entries whose task was
+// deleted are left alone (not rolled) to avoid churn.
+let _rollingPlans = false;
+async function maybeRollPlans() {
+  if (demoMode || _rollingPlans) return;
+  const today = todayIso();
+  const toRoll = allPlan.filter(p => {
+    if (p.day >= today) return false;                 // ISO dates compare lexically
+    const t = taskFor(p.project, p.task_row);
+    return t && t.status !== 'Completed';             // roll only existing, unfinished tasks
+  });
+  if (!toRoll.length) return;
+  _rollingPlans = true;
+  try {
+    const onToday = new Set(allPlan.filter(p => p.day === today).map(p => p.project + '::' + p.task_row));
+    let nextOrder = allPlan.filter(p => p.day === today).reduce((m, p) => Math.max(m, p.order), -1) + 1;
+    const moves = [], dupes = [];
+    for (const p of toRoll) {
+      const key = p.project + '::' + p.task_row;
+      if (onToday.has(key)) { dupes.push(p.row); }    // already planned today → drop the stale one
+      else { moves.push({ row: p.row, order: nextOrder++ }); onToday.add(key); }
+    }
+    // PUTs first (in-place, don't shift rows), then DELETEs high→low (deletes shift rows).
+    for (const m of moves) {
+      await fetch(`/api/plan/${m.row}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ day: today, order: m.order }) });
+    }
+    for (const row of dupes.sort((a, b) => b - a)) {
+      await fetch(`/api/plan/${row}`, { method: 'DELETE' });
+    }
+    await loadPlan(); refreshSyncStatus();
+    if (viewMode === 'upcoming') renderContent();
+  } finally { _rollingPlans = false; }
 }
 
 // ── Planner drag & drop ──
@@ -4198,6 +4243,14 @@ function closeProcrastinateOverlay() {
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
                   .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+// Status → CSS class, collapsing spaces to '-' so multi-word statuses ("In Progress",
+// "Not Started") become a single class token that matches .status-In-Progress etc.
+// (An HTML class attribute splits on spaces, so "status-In Progress" would be two
+// classes and never match a .status-In\ Progress rule.)
+function statusCls(s) {
+  return 'status-' + String(s).replace(/[^A-Za-z0-9]+/g, '-');
 }
 
 // Use jsStr() — not escHtml() — when embedding a value inside a JS string literal
