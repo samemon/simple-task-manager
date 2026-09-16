@@ -8,6 +8,7 @@ import webbrowser
 import json
 import os
 import re
+import sys
 import pathlib
 import shutil
 from flask import Flask, jsonify, request, render_template_string
@@ -34,98 +35,169 @@ _OLD_LOCAL = pathlib.Path("local_data.json")
 if _OLD_LOCAL.exists() and not pathlib.Path(LOCAL_DATA_FILE).exists():
     shutil.move(str(_OLD_LOCAL), LOCAL_DATA_FILE)
 
-LOCAL_MODE      = not bool(SHEET_ID)   # True when no Sheet ID configured
+# REMOTE_ENABLED: a Google Sheet is configured AND gspread is importable, so we
+# can mirror to Sheets. When True the app runs in DUAL mode (local mirror is the
+# read/source of truth; every edit is also written to Sheets live, or journalled
+# to a pending queue and replayed when the connection returns). When False the
+# app is pure-local (LOCAL_MODE) exactly as before.
+REMOTE_ENABLED  = bool(SHEET_ID) and _GSPREAD_AVAILABLE
+LOCAL_MODE      = not REMOTE_ENABLED
 
 SCOPES   = ["https://www.googleapis.com/auth/spreadsheets"]
 STATUSES = ["Not Started", "In Progress", "Pending", "Completed"]
 ACTIVE_STATUSES = {"Not Started", "In Progress", "Pending"}
 DATA_CACHE_TTL = float('inf')  # never auto-expire; use /api/sync to force refresh
+SYNC_INTERVAL  = 20   # seconds between background attempts to drain the pending queue
 
 NOTES_SHEET    = "_notes"
 COLLABS_SHEET  = "_collabs"
 LIT_SHEET      = "_literature"
-META_SHEETS    = {NOTES_SHEET, COLLABS_SHEET, LIT_SHEET}
+PLAN_SHEET     = "_plan"
+META_SHEETS    = {NOTES_SHEET, COLLABS_SHEET, LIT_SHEET, PLAN_SHEET}
 NOTE_COLORS    = ["#FFF9C4", "#C8E6C9", "#BBDEFB", "#F8BBD0", "#E1BEE7", "#FFE0B2"]
 IMPORTANCES    = ["High", "Medium", "Low"]
 PURPOSES       = ["Design", "Writing", "Analysis", "Planning", "Other"]
 NOTE_HEADERS   = ["Project", "Note", "Importance", "Purpose", "Color", "Created", "Modified"]
 COLLAB_HEADERS = ["Project", "Name", "Role"]
 LIT_HEADERS    = ["Project", "Title", "Link", "Authors", "Year", "Notes", "Created", "Modified"]
+PLAN_HEADERS   = ["Project", "TaskRow", "Day", "Order", "Hours", "Created", "Modified"]
 
 app = Flask(__name__)
 _sheet_cache  = None
 _fetch_lock   = threading.Lock()
-_ws_cache     = {}    # {title: worksheet object}
+_sync_lock    = threading.RLock()   # guards _pending_ops + remote writes
+_ws_cache     = {}    # {title: _LocalWS/_DualWS} — write handles returned to routes
+_remote_ws_cache = {} # {title: gspread Worksheet} — real remote handles (dual mode)
 _data_cache   = {}    # {title: [rows]} — project sheets only
 _notes_cache  = []    # rows from _notes sheet
 _collabs_cache= []    # rows from _collabs sheet
 _lit_cache    = []    # rows from _literature sheet
+_plan_cache   = []    # rows from _plan sheet
 _data_cache_ts= 0.0
 
+# Offline journal + sync state (dual mode only)
+_pending_ops  = []      # ordered list of {kind, title, ...} not yet applied to Sheets
+_online       = True    # last known reachability of Google Sheets
+_last_synced  = None    # ISO timestamp of the last successful full drain
+_sync_thread_started = False
 
-# ── Local-mode storage shim ───────────────────────────────────────────────
+
+# ── Local storage shim ────────────────────────────────────────────────────
+# The in-memory caches are the single source of truth for reads. _LocalWS makes
+# a mutation route write to those caches + the on-disk mirror using the same
+# ws.update()/append_row()/delete_rows() calls it would make against gspread.
+
+def _meta_cache_for(title):
+    """Return the module-level cache list for a meta sheet, or None for a project sheet."""
+    if title == NOTES_SHEET:   return _notes_cache
+    if title == COLLABS_SHEET: return _collabs_cache
+    if title == LIT_SHEET:     return _lit_cache
+    if title == PLAN_SHEET:    return _plan_cache
+    return None
+
 
 class _LocalWS:
-    """Mimics a gspread Worksheet so mutation routes work unchanged in local mode."""
-    def __init__(self, title, is_notes=False, is_collabs=False, is_lit=False):
+    """Mimics a gspread Worksheet so mutation routes work unchanged with no network."""
+    def __init__(self, title, is_notes=False, is_collabs=False, is_lit=False, is_plan=False):
         self.title     = title
         self._notes    = is_notes
         self._collabs  = is_collabs
         self._lit      = is_lit
+        self._plan     = is_plan
 
     def _row_num(self, range_name):
         m = re.search(r'\d+', range_name)
         return int(m.group()) if m else 1
 
+    def _meta_list(self):
+        return _meta_cache_for(self.title)
+
     def update(self, range_name, values):
         row = self._row_num(range_name)
-        if self._notes:
-            while len(_notes_cache) < row: _notes_cache.append([])
-            _notes_cache[row - 1] = list(values[0])
-        elif self._collabs:
-            while len(_collabs_cache) < row: _collabs_cache.append([])
-            _collabs_cache[row - 1] = list(values[0])
-        elif self._lit:
-            while len(_lit_cache) < row: _lit_cache.append([])
-            _lit_cache[row - 1] = list(values[0])
+        target = self._meta_list()
+        if target is not None:
+            while len(target) < row: target.append([])
+            target[row - 1] = list(values[0])
         else:
             patch_cache(self.title, row, values[0])
         _local_save()
 
     def append_row(self, values):
-        if self._notes:    _notes_cache.append(list(values))
-        elif self._collabs: _collabs_cache.append(list(values))
-        elif self._lit:     _lit_cache.append(list(values))
-        else: _data_cache.setdefault(self.title, []).append(list(values))
+        target = self._meta_list()
+        if target is not None:
+            target.append(list(values))
+        else:
+            _data_cache.setdefault(self.title, []).append(list(values))
         _local_save()
 
     def delete_rows(self, row):
-        target = (_notes_cache if self._notes else
-                  _collabs_cache if self._collabs else
-                  _lit_cache if self._lit else
-                  _data_cache.get(self.title, []))
+        target = self._meta_list()
+        if target is None:
+            target = _data_cache.get(self.title, [])
         if 0 < row <= len(target):
             target.pop(row - 1)
         _local_save()
 
 
+class _DualWS(_LocalWS):
+    """Dual mode: apply the mutation to the local mirror (via _LocalWS) AND mirror
+    it to Google Sheets — immediately when online, or onto the pending journal when
+    offline. Reads never come from here; they come from the caches _LocalWS fills."""
+    def update(self, range_name, values):
+        super().update(range_name, values)
+        _enqueue_or_apply({"kind": "update", "title": self.title,
+                           "range": range_name, "values": values})
+
+    def append_row(self, values):
+        super().append_row(values)
+        _enqueue_or_apply({"kind": "append", "title": self.title, "values": list(values)})
+
+    def delete_rows(self, row):
+        super().delete_rows(row)
+        _enqueue_or_apply({"kind": "delete", "title": self.title, "row": row})
+
+
+def _now_iso():
+    return datetime.datetime.now().isoformat(timespec="seconds")
+
+
+MIRROR_SCHEMA = 2   # bump when the mirror layout changes; v1 predates dual/offline mode
+_loaded_schema = 0  # schema of the mirror last read by _local_load()
+
+
 def _local_load():
-    global _data_cache, _notes_cache, _collabs_cache, _lit_cache, _data_cache_ts, _ws_cache
-    if os.path.exists(LOCAL_DATA_FILE):
-        with open(LOCAL_DATA_FILE) as f:
-            d = json.load(f)
-        _data_cache    = d.get("projects", {})
-        _notes_cache   = d.get("notes",    [])
-        _collabs_cache = d.get("collabs",  [])
-        _lit_cache     = d.get("literature", [])
-    _data_cache_ts = time.time()
-    _ws_cache = {k: _LocalWS(k) for k in _data_cache}
+    """Populate caches (and the pending journal) from the on-disk mirror.
+    Returns True if the mirror existed and held any data."""
+    global _data_cache, _notes_cache, _collabs_cache, _lit_cache, _plan_cache
+    global _pending_ops, _last_synced, _loaded_schema
+    _loaded_schema = 0
+    if not os.path.exists(LOCAL_DATA_FILE):
+        return False
+    with open(LOCAL_DATA_FILE) as f:
+        d = json.load(f)
+    _data_cache    = d.get("projects", {})
+    _notes_cache   = d.get("notes",    [])
+    _collabs_cache = d.get("collabs",  [])
+    _lit_cache     = d.get("literature", [])
+    _plan_cache    = d.get("plan",     [])
+    _pending_ops   = d.get("pending",  [])
+    _last_synced   = d.get("last_synced")
+    _loaded_schema = d.get("schema", 1)   # files written before this feature have no schema key
+    return bool(_data_cache or _notes_cache or _collabs_cache or _lit_cache or _plan_cache)
 
 
 def _local_save():
-    with open(LOCAL_DATA_FILE, "w") as f:
-        json.dump({"projects": _data_cache, "notes": _notes_cache, "collabs": _collabs_cache,
-                    "literature": _lit_cache}, f, indent=2)
+    """Atomically persist all caches + the pending journal to the mirror file.
+    Uses a per-thread temp name so a concurrent writer (e.g. the sync daemon) can't
+    clobber our temp file; os.replace makes the final swap atomic, last write wins."""
+    tmp = f"{LOCAL_DATA_FILE}.{os.getpid()}.{threading.get_ident()}.tmp"
+    with open(tmp, "w") as f:
+        json.dump({"schema": MIRROR_SCHEMA,
+                   "projects": _data_cache, "notes": _notes_cache,
+                   "collabs": _collabs_cache, "literature": _lit_cache,
+                   "plan": _plan_cache, "pending": _pending_ops,
+                   "last_synced": _last_synced}, f, indent=2)
+    os.replace(tmp, LOCAL_DATA_FILE)   # atomic: a crash mid-write can't corrupt the mirror
 
 
 # ── Google Sheets helpers ─────────────────────────────────────────────────
@@ -139,115 +211,241 @@ def get_sheet():
     return _sheet_cache
 
 
-def _fetch_all():
-    """Fetch all sheets in one pass; populate project, notes, collab, and literature caches."""
-    global _ws_cache, _data_cache, _notes_cache, _collabs_cache, _lit_cache, _data_cache_ts
-    if LOCAL_MODE:
-        _local_load()
+def _headers_for(title):
+    return {NOTES_SHEET: NOTE_HEADERS, COLLABS_SHEET: COLLAB_HEADERS,
+            LIT_SHEET: LIT_HEADERS, PLAN_SHEET: PLAN_HEADERS}.get(title, TASK_HEADERS)
+
+
+def _remote_ws(title):
+    """Real gspread worksheet for `title`, creating the tab (with headers) if missing."""
+    if title in _remote_ws_cache:
+        return _remote_ws_cache[title]
+    sh = get_sheet()
+    try:
+        ws = sh.worksheet(title)
+    except gspread.exceptions.WorksheetNotFound:
+        headers = _headers_for(title)
+        ws = sh.add_worksheet(title=title, rows=1000, cols=max(10, len(headers)))
+        ws.update(range_name="A1", values=[headers])
+    _remote_ws_cache[title] = ws
+    return ws
+
+
+def _apply_remote_op(op):
+    """Perform one journalled op against Google Sheets. Raises on failure."""
+    kind = op["kind"]
+    if kind == "update":
+        _remote_ws(op["title"]).update(range_name=op["range"], values=op["values"])
+    elif kind == "append":
+        _remote_ws(op["title"]).append_row(op["values"])
+    elif kind == "delete":
+        _remote_ws(op["title"]).delete_rows(op["row"])
+    elif kind == "create_sheet":
+        _remote_ws(op["title"])   # creation (with headers) is the whole operation
+    elif kind == "delete_sheet":
+        sh = get_sheet()
+        try:
+            sh.del_worksheet(sh.worksheet(op["title"]))
+        except gspread.exceptions.WorksheetNotFound:
+            pass
+        _remote_ws_cache.pop(op["title"], None)
+
+
+def _mark_online(v):
+    global _online
+    _online = v
+
+
+def _enqueue_or_apply(op):
+    """Mirror one op to Sheets now if we're caught up and online; else journal it."""
+    if not REMOTE_ENABLED:
+        return
+    with _sync_lock:
+        if _pending_ops:            # already behind — preserve strict ordering
+            _pending_ops.append(op)
+            _local_save()
+            return
+        try:
+            _apply_remote_op(op)
+            _mark_online(True)
+        except Exception as e:      # noqa: BLE001 — any failure means "not now", never lose the edit
+            _pending_ops.append(op)
+            _local_save()
+            _mark_online(False)
+            print(f"[sync] queued {op.get('kind')} on {op.get('title')} ({e.__class__.__name__})", file=sys.stderr)
+
+
+def _drain_pending():
+    """Replay the journal to Sheets in order. Stops at the first failure, keeping the rest queued."""
+    global _last_synced
+    if not REMOTE_ENABLED:
+        return
+    with _sync_lock:
+        if not _pending_ops:
+            return
+        while _pending_ops:
+            op = _pending_ops[0]
+            try:
+                _apply_remote_op(op)
+            except Exception as e:  # noqa: BLE001 — still offline / transient; try again later
+                _mark_online(False)
+                print(f"[sync] drain paused: {e.__class__.__name__}", file=sys.stderr)
+                return
+            _pending_ops.pop(0)
+            _local_save()
+        _mark_online(True)
+        _last_synced = _now_iso()
+        _local_save()
+
+
+def _try_pull_from_remote():
+    """One-time seed: pull every tab from Sheets into the caches + mirror.
+    Used only when the local mirror is empty (first run / fresh machine)."""
+    global _data_cache, _notes_cache, _collabs_cache, _lit_cache, _plan_cache
+    for attempt in range(5):
+        try:
+            sh = get_sheet()
+            worksheets = sh.worksheets()
+            _remote_ws_cache.clear()
+            _remote_ws_cache.update({ws.title: ws for ws in worksheets})
+            raw = {ws.title: ws.get_all_values() for ws in worksheets}
+            _data_cache    = {k: v for k, v in raw.items() if k not in META_SHEETS}
+            _notes_cache   = raw.get(NOTES_SHEET,  [])
+            _collabs_cache = raw.get(COLLABS_SHEET, [])
+            _lit_cache     = raw.get(LIT_SHEET, [])
+            _plan_cache    = raw.get(PLAN_SHEET, [])
+            _mark_online(True)
+            _local_save()
+            return True
+        except gspread.exceptions.APIError as e:
+            if getattr(e, "response", None) is not None and e.response.status_code == 429 and attempt < 4:
+                time.sleep(2 ** attempt)
+            else:
+                _mark_online(False)
+                return False
+        except Exception:           # noqa: BLE001 — offline first run
+            _mark_online(False)
+            return False
+    return False
+
+
+def _sync_loop():
+    while True:
+        time.sleep(SYNC_INTERVAL)
+        try:
+            if _pending_ops:
+                _drain_pending()
+        except Exception as e:      # noqa: BLE001 — never let the daemon die
+            print(f"[sync] loop error: {e.__class__.__name__}", file=sys.stderr)
+
+
+def _start_sync_thread_once():
+    global _sync_thread_started
+    if _sync_thread_started or not REMOTE_ENABLED:
+        return
+    _sync_thread_started = True
+    threading.Thread(target=_sync_loop, daemon=True).start()
+
+
+def _ensure_loaded():
+    """Load caches from the mirror on first use; seed from Sheets if the mirror is empty."""
+    global _data_cache_ts
+    if _data_cache_ts > 0:
         return
     with _fetch_lock:
-        if _data_cache_ts > 0 and (time.time() - _data_cache_ts) < DATA_CACHE_TTL:
+        if _data_cache_ts > 0:
             return
-        sh = get_sheet()
-        for attempt in range(5):
-            try:
-                worksheets = sh.worksheets()
-                _ws_cache = {ws.title: ws for ws in worksheets}
-                raw = {ws.title: ws.get_all_values() for ws in worksheets}
-                _data_cache   = {k: v for k, v in raw.items() if k not in META_SHEETS}
-                _notes_cache  = raw.get(NOTES_SHEET,  [])
-                _collabs_cache= raw.get(COLLABS_SHEET, [])
-                _lit_cache    = raw.get(LIT_SHEET, [])
-                _data_cache_ts = time.time()
-                return
-            except gspread.exceptions.APIError as e:
-                if e.response.status_code == 429 and attempt < 4:
-                    time.sleep(2 ** attempt)
-                else:
-                    raise
+        had = _local_load()
+        if REMOTE_ENABLED:
+            # Trust the mirror only if it was written by this dual/offline version.
+            # A pre-dual mirror (schema < 2) is ignored so the first dual launch
+            # re-seeds cleanly from the real Sheet instead of showing stale data.
+            if not had or _loaded_schema < MIRROR_SCHEMA:
+                _reset_caches()           # drop any stale pre-dual rows before seeding
+                _try_pull_from_remote()   # offline first run just leaves it empty until a later sync
+            _start_sync_thread_once()
+            _drain_pending()              # catch up anything journalled before a restart
+        _data_cache_ts = time.time()
+
+
+def _fetch_all():
+    """Back-compat shim: ensure caches are loaded (no forced network re-read)."""
+    _ensure_loaded()
 
 
 def get_all_sheet_data():
-    if _data_cache_ts > 0 and (time.time() - _data_cache_ts) < DATA_CACHE_TTL:
-        return _data_cache
-    _fetch_all()
+    _ensure_loaded()
     return _data_cache
 
 
 def get_notes_data():
-    if _data_cache_ts > 0 and (time.time() - _data_cache_ts) < DATA_CACHE_TTL:
-        return _notes_cache
-    _fetch_all()
+    _ensure_loaded()
     return _notes_cache
 
 
 def get_collabs_data():
-    if _data_cache_ts > 0 and (time.time() - _data_cache_ts) < DATA_CACHE_TTL:
-        return _collabs_cache
-    _fetch_all()
+    _ensure_loaded()
     return _collabs_cache
 
 
 def get_literature_data():
-    if _data_cache_ts > 0 and (time.time() - _data_cache_ts) < DATA_CACHE_TTL:
-        return _lit_cache
-    _fetch_all()
+    _ensure_loaded()
     return _lit_cache
 
 
+def get_plan_data():
+    _ensure_loaded()
+    return _plan_cache
+
+
+def _make_ws(title, **flags):
+    return _DualWS(title, **flags) if REMOTE_ENABLED else _LocalWS(title, **flags)
+
+
 def get_worksheet(title):
-    if LOCAL_MODE:
-        if title not in _data_cache:
-            _fetch_all()
-        if title not in _data_cache:
-            raise KeyError(title)
-        return _LocalWS(title)
-    if title not in _ws_cache:
-        _fetch_all()
-    if title not in _ws_cache:
+    _ensure_loaded()
+    if title not in _data_cache:
         raise KeyError(title)
-    return _ws_cache[title]
+    return _make_ws(title)
 
 
 def ensure_meta_ws(title, headers):
-    """Get or lazily create a meta worksheet."""
-    global _notes_cache, _collabs_cache, _lit_cache
-    if LOCAL_MODE:
-        is_n = (title == NOTES_SHEET)
-        is_c = (title == COLLABS_SHEET)
-        is_l = (title == LIT_SHEET)
-        if is_n and not _notes_cache:
-            _notes_cache = [headers]
-            _local_save()
-        elif is_c and not _collabs_cache:
-            _collabs_cache = [headers]
-            _local_save()
-        elif is_l and not _lit_cache:
-            _lit_cache = [headers]
-            _local_save()
-        return _LocalWS(title, is_notes=is_n, is_collabs=is_c, is_lit=is_l)
-    if title not in _ws_cache:
-        _fetch_all()
-    if title not in _ws_cache:
-        sh = get_sheet()
-        ws = sh.add_worksheet(title=title, rows=1000, cols=len(headers))
-        ws.update(range_name="A1", values=[headers])
-        _ws_cache[title] = ws
-        if title == NOTES_SHEET:
-            _notes_cache = [headers]
-        elif title == COLLABS_SHEET:
-            _collabs_cache = [headers]
-        elif title == LIT_SHEET:
-            _lit_cache = [headers]
-    return _ws_cache[title]
+    """Get a write handle for a meta sheet, seeding its header row locally if new."""
+    _ensure_loaded()
+    flags = {"is_notes": title == NOTES_SHEET, "is_collabs": title == COLLABS_SHEET,
+             "is_lit": title == LIT_SHEET, "is_plan": title == PLAN_SHEET}
+    cache = _meta_cache_for(title)
+    if cache is not None and not cache:
+        cache.append(list(headers))   # seed header row in place (row 1)
+        _local_save()
+        # Remote tab (with the same header row) is created lazily by _remote_ws on
+        # the first journalled op, so no header op needs to be enqueued here.
+    return _make_ws(title, **flags)
 
 
-def invalidate_cache():
-    global _data_cache, _notes_cache, _collabs_cache, _lit_cache, _data_cache_ts
+def sync_status():
+    return {
+        "remote_enabled": REMOTE_ENABLED,
+        "local_mode": LOCAL_MODE,
+        "online": _online,
+        "pending": len(_pending_ops),
+        "last_synced": _last_synced,
+    }
+
+
+def _reset_caches():
+    """Empty the data caches (not the pending journal or timestamp)."""
+    global _data_cache, _notes_cache, _collabs_cache, _lit_cache, _plan_cache
     _data_cache    = {}
     _notes_cache   = []
     _collabs_cache = []
     _lit_cache     = []
+    _plan_cache    = []
+
+
+def invalidate_cache():
+    global _data_cache_ts
+    _reset_caches()
     _data_cache_ts = 0.0
 
 
@@ -375,6 +573,28 @@ def parse_literature(rows):
             "modified": row[7].strip() if len(row) > 7 else "",
         })
     return lit
+
+
+def parse_plan(rows):
+    plan = []
+    for i, row in enumerate(rows[1:], start=2):
+        # Project, TaskRow, Day, Order, Hours, Created, Modified
+        if len(row) < 3 or not row[0].strip() or not row[2].strip():
+            continue
+        def _int(v, d=0):
+            try: return int(float(v))
+            except (TypeError, ValueError): return d
+        plan.append({
+            "row":      i,
+            "project":  row[0].strip(),
+            "task_row": _int(row[1].strip() if len(row) > 1 else "", 0),
+            "day":      row[2].strip(),          # ISO date "YYYY-MM-DD"
+            "order":    _int(row[3].strip() if len(row) > 3 else "", 0),
+            "hours":    row[4].strip() if len(row) > 4 else "",
+            "created":  row[5].strip() if len(row) > 5 else "",
+            "modified": row[6].strip() if len(row) > 6 else "",
+        })
+    return plan
 
 
 # ── API ──────────────────────────────────────────────────────────────────────
@@ -634,62 +854,113 @@ def api_delete_literature(row):
     return jsonify({"ok": True})
 
 
+# ── Plan API (weekly planner: which task on which day, priority order, est. hours) ──
+
+@app.route("/api/plan")
+def api_plan():
+    return jsonify(parse_plan(get_plan_data()))
+
+
+@app.route("/api/plan", methods=["POST"])
+def api_add_plan():
+    data = request.get_json(silent=True) or {}
+    project = (data.get("project") or "").strip()
+    day     = (data.get("day") or "").strip()
+    if not project or not day:
+        return jsonify({"error": "project and day required"}), 400
+    ws = ensure_meta_ws(PLAN_SHEET, PLAN_HEADERS)
+    today = _today()
+    new_row = [
+        project, str(data.get("task_row", "")), day,
+        str(data.get("order", 0)), str(data.get("hours", "")),
+        today, today,
+    ]
+    ws.append_row(new_row)
+    append_meta_cache(_plan_cache, ws, new_row)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/plan/<int:row>", methods=["PUT"])
+def api_update_plan(row):
+    data = request.get_json(silent=True) or {}
+    ws = ensure_meta_ws(PLAN_SHEET, PLAN_HEADERS)
+    rows = get_plan_data()
+    current = list(rows[row - 1]) if row - 1 < len(rows) else []
+    while len(current) < 7:
+        current.append("")
+    updated = [
+        data.get("project",  current[0]),
+        str(data.get("task_row", current[1])),
+        data.get("day",      current[2]),
+        str(data.get("order", current[3])),
+        str(data.get("hours", current[4])),
+        current[5],   # created unchanged
+        _today(),     # modified
+    ]
+    ws.update(range_name=f"A{row}:G{row}", values=[updated])
+    patch_meta_cache(_plan_cache, row, updated)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/plan/<int:row>", methods=["DELETE"])
+def api_delete_plan(row):
+    ws = ensure_meta_ws(PLAN_SHEET, PLAN_HEADERS)
+    ws.delete_rows(row)
+    delete_meta_cache_row(_plan_cache, ws, row)
+    return jsonify({"ok": True})
+
+
 # ── Sync API ──────────────────────────────────────────────────────────────────
 
 @app.route("/api/sync", methods=["POST"])
 def api_sync():
-    """Force re-fetch (from Sheets or local JSON)."""
-    invalidate_cache()
-    _fetch_all()
-    return jsonify({"ok": True, "local_mode": LOCAL_MODE})
+    """Push any pending offline changes to Sheets and report sync state.
+    Never overwrites the local mirror from Sheets — the mirror is the source of truth.
+    (If the mirror is somehow still empty, do the one-time seed pull.)"""
+    _ensure_loaded()
+    if REMOTE_ENABLED:
+        if not (_data_cache or _notes_cache or _collabs_cache or _lit_cache or _plan_cache):
+            _try_pull_from_remote()
+        _drain_pending()
+    return jsonify({"ok": True, **sync_status()})
 
 
 @app.route("/api/status")
 def api_status():
-    return jsonify({"local_mode": LOCAL_MODE})
+    _ensure_loaded()
+    return jsonify(sync_status())
 
 
 # ── Projects API ──────────────────────────────────────────────────────────────
 
 @app.route("/api/projects", methods=["POST"])
 def api_create_project():
-    name = (request.json or {}).get("name", "").strip()
+    name = (request.get_json(silent=True) or {}).get("name", "").strip()
     if not name:
         return jsonify({"error": "Name required"}), 400
-    get_all_sheet_data()   # ensure cache warm
-    if name in _data_cache or name in _ws_cache:
+    _ensure_loaded()
+    if name in _data_cache:
         return jsonify({"error": "Project already exists"}), 409
-    if LOCAL_MODE:
-        _data_cache[name] = [TASK_HEADERS]
-        _ws_cache[name]   = _LocalWS(name)
-        _local_save()
-        return jsonify({"ok": True, "name": name})
-    sh = get_sheet()
-    ws = sh.add_worksheet(title=name, rows=1000, cols=10)
-    ws.update(range_name="A1:F1", values=[TASK_HEADERS])
-    _ws_cache[name]   = ws
-    _data_cache[name] = [TASK_HEADERS]   # ← bug fix: header row prevents row-1 collision
+    if name in META_SHEETS:
+        return jsonify({"error": "Reserved name"}), 400
+    _data_cache[name] = [list(TASK_HEADERS)]   # header row prevents row-1 collision
+    _local_save()
+    if REMOTE_ENABLED:
+        _enqueue_or_apply({"kind": "create_sheet", "title": name})
     return jsonify({"ok": True, "name": name})
 
 
 @app.route("/api/projects/<name>", methods=["DELETE"])
 def api_delete_project(name):
-    global _data_cache, _ws_cache
-    if name not in _data_cache:
-        _fetch_all()
+    _ensure_loaded()
     if name not in _data_cache:
         return jsonify({"error": "Project not found"}), 404
     if name in META_SHEETS:
         return jsonify({"error": "Cannot delete meta sheet"}), 400
-    if LOCAL_MODE:
-        _data_cache.pop(name, None)
-        _ws_cache.pop(name, None)
-        _local_save()
-        return jsonify({"ok": True})
-    sh = get_sheet()
-    sh.del_worksheet(_ws_cache[name])
-    _ws_cache.pop(name, None)
     _data_cache.pop(name, None)
+    _local_save()
+    if REMOTE_ENABLED:
+        _enqueue_or_apply({"kind": "delete_sheet", "title": name})
     return jsonify({"ok": True})
 
 
@@ -1121,11 +1392,11 @@ HTML = r"""<!DOCTYPE html>
   .status-option:hover { background: var(--bg); }
   .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
-  /* Plan-for-today picker */
+  /* Plan picker (add a task to a chosen day) */
   .today-picker {
     position: absolute; background: var(--surface); border: 1.5px solid var(--border);
     border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.12);
-    z-index: 50; width: 280px; display: none; padding: 8px;
+    z-index: 50; width: 300px; display: none; padding: 8px;
   }
   .today-picker.open { display: block; }
   .today-picker input {
@@ -1133,23 +1404,94 @@ HTML = r"""<!DOCTYPE html>
     font-size: 12px; font-family: inherit; outline: none; background: var(--bg); color: var(--text);
     margin-bottom: 6px; box-sizing: border-box;
   }
-  .today-picker-list { max-height: 220px; overflow-y: auto; }
+  .today-picker-head { font-size: 11px; font-weight: 700; color: var(--text-muted);
+                       text-transform: uppercase; letter-spacing: 0.5px; margin: 2px 2px 6px; }
+  .today-picker-list { max-height: 240px; overflow-y: auto; }
   .today-picker-item { padding: 7px 8px; font-size: 12px; cursor: pointer; border-radius: 6px; }
   .today-picker-item:hover { background: var(--bg); }
   .today-picker-item .tpi-sheet { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
   .today-picker-empty { padding: 10px; font-size: 12px; color: var(--text-muted); text-align: center; }
 
-  /* Plan-for-today section */
-  .today-plan {
-    border: 1.5px dashed var(--border); border-radius: 12px; padding: 14px;
+  /* ── Week board (Upcoming planner) ── */
+  .week-nav { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  .week-nav button {
+    padding: 5px 11px; border: 1.5px solid var(--border); border-radius: 8px;
+    background: var(--surface); color: var(--text); font-size: 13px; cursor: pointer; font-family: inherit;
+  }
+  .week-nav button:hover { background: var(--border); }
+  .week-nav .week-label { font-size: 14px; font-weight: 700; color: var(--text); }
+  .week-nav .week-hours { font-size: 12px; color: var(--text-muted); margin-left: auto; }
+
+  .week-board {
+    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(190px, 1fr);
+    gap: 10px; overflow-x: auto; padding-bottom: 8px; margin-bottom: 30px; align-items: start;
+  }
+  .day-col {
+    background: var(--surface); border: 1.5px solid var(--border); border-radius: 12px;
+    display: flex; flex-direction: column; min-height: 90px; max-height: 62vh;
     transition: border-color 0.15s, background 0.15s;
   }
-  .today-plan.drag-over { border-color: var(--accent); background: var(--accent-light); }
-  .today-plan .task-table { box-shadow: none; }
-  .today-plan-empty { font-size: 12px; color: var(--text-muted); text-align: center; padding: 16px 8px; }
-  .plan-add-btn { float: right; opacity: 1; font-size: 15px; font-weight: 700; margin-top: -3px; }
+  .day-col.is-today { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .day-col.drag-over { border-color: var(--accent); background: var(--accent-light); }
+  .day-col-head {
+    display: flex; align-items: baseline; gap: 6px; padding: 9px 11px 7px;
+    border-bottom: 1px solid var(--border); position: sticky; top: 0;
+  }
+  .day-col-dow  { font-size: 12px; font-weight: 700; color: var(--text); }
+  .day-col-date { font-size: 11px; color: var(--text-muted); }
+  .day-col-hrs  { font-size: 10px; color: var(--text-muted); margin-left: auto; white-space: nowrap; }
+  .day-col-add  {
+    margin-left: 4px; background: none; border: none; cursor: pointer; color: var(--accent);
+    font-size: 15px; font-weight: 700; line-height: 1; padding: 0 2px;
+  }
+  .day-col-body { overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 7px; flex: 1; }
+  .day-empty { font-size: 11px; color: var(--text-muted); text-align: center; padding: 14px 6px; }
+
+  .plan-card {
+    background: var(--bg); border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 8px; padding: 7px 8px; font-size: 12px; position: relative;
+  }
+  .plan-card.done { opacity: 0.6; }
+  .plan-card.done .plan-card-task { text-decoration: line-through; }
+  .plan-card-top { display: flex; align-items: flex-start; gap: 5px; }
+  .plan-rank {
+    flex-shrink: 0; min-width: 16px; height: 16px; border-radius: 50%; background: var(--accent);
+    color: #fff; font-size: 10px; font-weight: 700; display: flex; align-items: center;
+    justify-content: center; margin-top: 1px; padding: 0 3px;
+  }
+  .plan-card-task { flex: 1; color: var(--text); line-height: 1.35; word-break: break-word; }
+  .plan-card-proj { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+  .plan-card-row { display: flex; align-items: center; gap: 4px; margin-top: 6px; }
+  .plan-hours-input {
+    width: 46px; padding: 2px 5px; border: 1px solid var(--border); border-radius: 5px;
+    font-size: 11px; font-family: inherit; background: var(--surface); color: var(--text); outline: none;
+  }
+  .plan-hours-input:focus { border-color: var(--accent); }
+  .plan-hours-label { font-size: 10px; color: var(--text-muted); }
+  .plan-mini-btn {
+    margin-left: auto; background: none; border: none; cursor: pointer; color: var(--text-muted);
+    font-size: 12px; padding: 1px 4px; border-radius: 4px; line-height: 1;
+  }
+  .plan-mini-btn:hover { background: var(--border); color: var(--text); }
+  .plan-mini-btn.up, .plan-mini-btn.down { margin-left: 0; font-size: 11px; }
+  .plan-mini-btn.rm:hover { background: #FED7D7; color: #C53030; }
   .task-row[draggable="true"] { cursor: grab; }
-  .task-row.dragging-task { opacity: 0.4; }
+  .task-row.dragging-task, .plan-card.dragging-task { opacity: 0.4; }
+
+  /* ── Sync status pill ── */
+  #sync-status {
+    display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; border-radius: 20px;
+    font-size: 11px; font-weight: 600; white-space: nowrap; cursor: default; border: 1.5px solid transparent;
+  }
+  #sync-status .sync-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  #sync-status.synced  { background: rgba(56,161,105,0.14); color: #2F855A; }
+  #sync-status.synced  .sync-dot { background: #38A169; }
+  #sync-status.offline { background: rgba(221,107,32,0.15); color: #C05621; }
+  #sync-status.offline .sync-dot { background: #DD6B20; }
+  #sync-status.syncing { background: rgba(66,153,225,0.15); color: #2B6CB0; }
+  #sync-status.syncing .sync-dot { background: #4299E1; }
+  #sync-status.localonly { background: var(--border); color: var(--text-muted); }
+  #sync-status.localonly .sync-dot { background: var(--text-muted); }
 
   /* ── Garden / flower cards ── */
   .garden-grid { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 28px; }
@@ -1475,6 +1817,9 @@ HTML = r"""<!DOCTYPE html>
     <h2 id="topbar-title">All Projects</h2>
     <div id="topbar-right">
       <div id="demo-banner">📸 DEMO</div>
+      <span id="sync-status" class="localonly" title="Sync status" style="display:none">
+        <span class="sync-dot"></span><span id="sync-status-text">Local</span>
+      </span>
       <button id="refresh-btn" onclick="syncAll()">↻ Sync</button>
       <button id="add-btn" onclick="openAddModal()">+ Add Task</button>
     </div>
@@ -1690,8 +2035,9 @@ HTML = r"""<!DOCTYPE html>
   </div>
 </div>
 
-<!-- Plan-for-today picker -->
+<!-- Plan picker: add a task to a chosen day -->
 <div class="today-picker" id="today-picker" onclick="event.stopPropagation()">
+  <div class="today-picker-head" id="today-picker-head">Add to day</div>
   <input type="text" id="today-picker-search" placeholder="Search tasks…" oninput="renderTodayPickerList()">
   <div class="today-picker-list" id="today-picker-list"></div>
 </div>
@@ -1728,6 +2074,10 @@ let allTasks   = {};
 let allNotes   = [];
 let allCollabs = [];
 let allLiterature = [];
+let allPlan = [];          // rows from /api/plan: {row, project, task_row, day, order, hours, ...}
+let _weekOffset = 0;       // 0 = current week, -1 = last week, +1 = next week
+let _planPickerDay = null; // ISO date the picker will add a task to
+let _syncPollTimer = null;
 let activeSheet  = null;
 let activeFilter = 'all';
 let viewMode     = 'tasks';
@@ -1922,6 +2272,7 @@ const DEMO_DATA = {
      authors:"Hicks, D. et al.", year:"2015", notes:"Good framing for our metrics critique section.",
      created:"2 Apr 2026", modified:"2 Apr 2026"},
   ],
+  plan: [],
 };
 
 let demoMode = localStorage.getItem('demoMode') === '1';
@@ -1932,10 +2283,10 @@ async function toggleDemoMode(on) {
   document.getElementById('demo-banner').style.display = on ? 'flex' : 'none';
   // Reset project selection (names differ between real and demo) but keep current view
   activeSheet = null;
-  _todayPlanCache = null;
   if (viewMode === 'tasks') document.getElementById('topbar-title').textContent = 'All Projects';
-  await Promise.all([loadSheets(), loadTasks(true), loadNotes(), loadCollabs(), loadLiterature()]);
+  await Promise.all([loadSheets(), loadTasks(true), loadNotes(), loadCollabs(), loadLiterature(), loadPlan()]);
   renderContent();
+  refreshSyncStatus();
 }
 
 function guardDemo() {
@@ -1957,7 +2308,9 @@ async function init() {
       document.getElementById('refresh-btn').title = 'Reload from local storage';
     }
   }
-  await Promise.all([loadSheets(), loadTasks(), loadNotes(), loadCollabs(), loadLiterature()]);
+  await Promise.all([loadSheets(), loadTasks(), loadNotes(), loadCollabs(), loadLiterature(), loadPlan()]);
+  refreshSyncStatus();
+  startSyncPolling();
 }
 
 async function loadSheets() {
@@ -2000,22 +2353,67 @@ async function loadLiterature() {
   allLiterature = await res.json();
 }
 
+async function loadPlan() {
+  if (demoMode) { allPlan = (DEMO_DATA.plan || []).map(p => ({...p})); return; }
+  const res = await fetch('/api/plan');
+  allPlan = await res.json();
+}
+
 async function syncAll() {
   if (demoMode) {
-    await Promise.all([loadSheets(), loadTasks(true), loadNotes(), loadCollabs(), loadLiterature()]);
+    await Promise.all([loadSheets(), loadTasks(true), loadNotes(), loadCollabs(), loadLiterature(), loadPlan()]);
     renderContent(); return;
   }
   const btn = document.getElementById('refresh-btn');
   btn.textContent = '↻ Syncing…';
   btn.disabled = true;
+  setSyncPill('syncing');
   try {
     await fetch('/api/sync', { method: 'POST' });
-    await Promise.all([loadSheets(), loadTasks(true), loadNotes(), loadCollabs(), loadLiterature()]);
+    await Promise.all([loadSheets(), loadTasks(true), loadNotes(), loadCollabs(), loadLiterature(), loadPlan()]);
     renderContent();
   } finally {
     btn.textContent = '↻ Sync';
     btn.disabled = false;
+    refreshSyncStatus();
   }
+}
+
+// ── Sync status pill ──────────────────────────────────────────────────────
+
+function setSyncPill(state, text) {
+  const pill = document.getElementById('sync-status');
+  if (!pill) return;
+  pill.style.display = '';
+  pill.className = state;
+  document.getElementById('sync-status-text').textContent = text || state;
+}
+
+async function refreshSyncStatus() {
+  if (demoMode) { const p = document.getElementById('sync-status'); if (p) p.style.display = 'none'; return; }
+  let st;
+  try { st = await fetch('/api/status').then(r => r.json()); }
+  catch (e) { setSyncPill('offline', 'Offline'); return; }
+  if (!st.remote_enabled) { setSyncPill('localonly', 'Local only'); return; }
+  if (st.pending > 0) {
+    setSyncPill('offline', `Offline · ${st.pending} pending`);
+  } else if (!st.online) {
+    setSyncPill('offline', 'Offline');
+  } else {
+    setSyncPill('synced', 'Synced');
+  }
+}
+
+function startSyncPolling() {
+  if (_syncPollTimer) clearInterval(_syncPollTimer);
+  _syncPollTimer = setInterval(() => {
+    refreshSyncStatus();
+    // If changes are queued, POST /api/sync nudges the server to drain them now.
+    const pill = document.getElementById('sync-status');
+    if (pill && pill.classList.contains('offline')) {
+      fetch('/api/sync', { method: 'POST' }).then(() => refreshSyncStatus()).catch(() => {});
+    }
+  }, 15000);
 }
 
 // ── Sidebar ───────────────────────────────────────────────────────────────
@@ -2027,8 +2425,8 @@ function setSidebarActive(id) {
 }
 
 function updateTopbar() {
-  const isTaskView = viewMode === 'tasks' || viewMode === 'upcoming';
-  document.getElementById('filter-area').style.display = isTaskView ? '' : 'none';
+  // Filter pills apply only to the task list; the Upcoming planner ignores them.
+  document.getElementById('filter-area').style.display = viewMode === 'tasks' ? '' : 'none';
   const searchEl = document.getElementById('search-input');
   const exportEl = document.getElementById('export-btn');
   if (searchEl) searchEl.style.display = viewMode === 'tasks' ? '' : 'none';
@@ -2273,79 +2671,125 @@ function deadlinePillClass(d) {
 
 function renderUpcoming() {
   const content = document.getElementById('content');
+  const days = weekDates(_weekOffset);
+  const todayIsoStr = todayIso();
+
+  const byDay = {};
+  allPlan.forEach(p => { (byDay[p.day] = byDay[p.day] || []).push(p); });
+
+  let weekTotal = 0;
+  const cols = days.map((d, i) => {
+    const iso = isoDay(d);
+    const entries = (byDay[iso] || []).slice().sort((a, b) => (a.order - b.order) || (a.row - b.row));
+    let dayHours = 0;
+    const cards = entries.map((p, idx) => {
+      const h = parseFloat(p.hours); if (!isNaN(h)) dayHours += h;
+      return planCardHtml(p, idx, entries.length);
+    }).join('');
+    weekTotal += dayHours;
+    const dateLabel = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    const dowLabel = (iso === todayIsoStr) ? 'Today' : d.toLocaleDateString('en-GB', { weekday: 'short' });
+    return `<div class="day-col ${iso === todayIsoStr ? 'is-today' : ''}" data-day="${iso}"
+        ondragover="onDayDragOver(event)" ondragleave="event.currentTarget.classList.remove('drag-over')"
+        ondrop="onDayDrop(event,'${iso}')">
+      <div class="day-col-head">
+        <span class="day-col-dow">${dowLabel}</span>
+        <span class="day-col-date">${escHtml(dateLabel)}</span>
+        ${dayHours ? `<span class="day-col-hrs">${(+dayHours.toFixed(2))}h</span>` : ''}
+        <button class="day-col-add" title="Add a task to this day" onclick="openDayPicker(event,'${iso}')">+</button>
+      </div>
+      <div class="day-col-body">
+        ${cards || `<div class="day-empty">Drop a task here<br>or click +</div>`}
+      </div>
+    </div>`;
+  }).join('');
+
+  const range = days[0].toLocaleDateString('en-GB', { day: 'numeric', month: 'short' }) +
+                ' – ' + days[6].toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  const nav = `<div class="week-nav">
+      <button onclick="changeWeek(-1)">‹ Prev</button>
+      <span class="week-label">${escHtml(range)}</span>
+      <button onclick="changeWeek(1)">Next ›</button>
+      ${_weekOffset !== 0 ? `<button onclick="gotoThisWeek()">Today</button>` : ''}
+      ${weekTotal ? `<span class="week-hours">Planned: ${(+weekTotal.toFixed(2))}h</span>` : ''}
+    </div>`;
+
+  content.innerHTML = nav + `<div class="week-board">${cols}</div>` + upcomingBacklogHtml();
+}
+
+function planCardHtml(p, idx, total) {
+  const t = taskFor(p.project, p.task_row);
+  const done = t && t.status === 'Completed';
+  const taskText = t ? t.task : '(task no longer exists)';
+  const sub = [p.project, t && t.deadline ? '📅 ' + t.deadline : '', t ? t.status : '']
+                .filter(Boolean).join(' · ');
+  const hoursVal = (p.hours != null ? String(p.hours) : '');
+  return `<div class="plan-card ${done ? 'done' : ''}" draggable="true" data-planrow="${p.row}"
+      ondragstart="onPlanCardDragStart(event,${p.row})" ondragend="event.currentTarget.classList.remove('dragging-task')">
+    <div class="plan-card-top">
+      <span class="plan-rank">${idx + 1}</span>
+      <div style="flex:1;min-width:0">
+        <div class="plan-card-task">${escHtml(taskText)}</div>
+        <div class="plan-card-proj">${escHtml(sub)}</div>
+      </div>
+      <button class="plan-mini-btn rm" title="Remove from plan" onclick="removePlan(${p.row})">✕</button>
+    </div>
+    <div class="plan-card-row">
+      <button class="plan-mini-btn up"   title="Higher priority" ${idx === 0 ? 'disabled' : ''} onclick="movePlanRank(${p.row},-1)">▲</button>
+      <button class="plan-mini-btn down" title="Lower priority" ${idx === total - 1 ? 'disabled' : ''} onclick="movePlanRank(${p.row},1)">▼</button>
+      <input class="plan-hours-input" type="number" min="0" step="0.5" value="${escHtml(hoursVal)}"
+        title="Estimated hours" placeholder="hrs" onchange="setPlanHours(${p.row}, this.value)"
+        onclick="event.stopPropagation()">
+      <span class="plan-hours-label">h</span>
+    </div>
+  </div>`;
+}
+
+function upcomingBacklogHtml() {
   const today = new Date(); today.setHours(0, 0, 0, 0);
   const week  = new Date(today); week.setDate(today.getDate() + 7);
   const month = new Date(today); month.setDate(today.getDate() + 30);
-
   const groups = { overdue: [], today: [], week: [], month: [], later: [], none: [] };
-  const plan = getTodayPlan();
-  const planned = [];
-
-  Object.entries(allTasks).forEach(([sheet, tasks]) => {
-    tasks.forEach(t => {
-      if (t.status === 'Completed') return;
-      const item = { ...t, sheet };
-      if (plan.keys.includes(`${sheet}::${t.row}`)) planned.push(item);
-      const d = parseDeadline(t.deadline);
-      if (!d) { groups.none.push(item); return; }
-      const dt = new Date(d); dt.setHours(0, 0, 0, 0);
-      if (dt < today)                       groups.overdue.push(item);
-      else if (dt.getTime() === today.getTime()) groups.today.push(item);
-      else if (dt <= week)                   groups.week.push(item);
-      else if (dt <= month)                  groups.month.push(item);
-      else                                   groups.later.push(item);
-    });
-  });
-
+  Object.entries(allTasks).forEach(([sheet, tasks]) => tasks.forEach(t => {
+    if (t.status === 'Completed') return;
+    const item = { ...t, sheet };
+    const d = parseDeadline(t.deadline);
+    if (!d) { groups.none.push(item); return; }
+    const dt = new Date(d); dt.setHours(0, 0, 0, 0);
+    if (dt < today)                            groups.overdue.push(item);
+    else if (dt.getTime() === today.getTime()) groups.today.push(item);
+    else if (dt <= week)                       groups.week.push(item);
+    else if (dt <= month)                      groups.month.push(item);
+    else                                       groups.later.push(item);
+  }));
   const byDate = (a, b) => (parseDeadline(a.deadline) || 0) - (parseDeadline(b.deadline) || 0);
-
-  const planSection = `<div class="section today-plan"
-        ondragover="event.preventDefault();event.currentTarget.classList.add('drag-over')"
-        ondragleave="event.currentTarget.classList.remove('drag-over')"
-        ondrop="onDropToday(event)">
-      <div class="section-title" style="color:var(--today-color)">
-        📌 Plan for Today &mdash; ${planned.length} task${planned.length !== 1 ? 's' : ''}
-        <button class="icon-btn plan-add-btn" title="Add a task to today's plan" onclick="openTodayPicker(event)">+</button>
-      </div>
-      ${planned.length
-        ? `<table class="task-table"><tbody>${planned.sort(byDate).map(t => upcomingRow(t, true)).join('')}</tbody></table>`
-        : `<div class="today-plan-empty">Drag a task here from below, or click + to add one.</div>`}
-    </div>`;
-
   const sections = [
-    { key: 'overdue', label: 'Overdue',      color: 'var(--overdue-color)' },
-    { key: 'today',   label: 'Today',         color: 'var(--today-color)'  },
-    { key: 'week',    label: 'This Week',     color: 'var(--week-color)'   },
-    { key: 'month',   label: 'This Month',    color: 'var(--month-color)'  },
-    { key: 'later',   label: 'Later',         color: 'var(--later-color)'  },
-    { key: 'none',    label: 'No Deadline',   color: 'var(--later-color)'  },
+    { key: 'overdue', label: 'Overdue',    color: 'var(--overdue-color)' },
+    { key: 'today',   label: 'Today',      color: 'var(--today-color)'  },
+    { key: 'week',    label: 'This Week',  color: 'var(--week-color)'   },
+    { key: 'month',   label: 'This Month', color: 'var(--month-color)'  },
+    { key: 'later',   label: 'Later',      color: 'var(--later-color)'  },
+    { key: 'none',    label: 'No Deadline',color: 'var(--later-color)'  },
   ];
-
-  const restHtml = sections
-    .filter(s => groups[s.key].length)
-    .map(s => {
-      const items = s.key === 'none' ? groups[s.key] : groups[s.key].sort(byDate);
-      const rows = items.map(t => upcomingRow(t)).join('');
-      return `<div class="section">
-        <div class="section-title" style="color:${s.color}">${s.label} &mdash; ${items.length} task${items.length !== 1 ? 's' : ''}</div>
-        <table class="task-table"><tbody>${rows}</tbody></table>
-      </div>`;
-    }).join('');
-
-  content.innerHTML = planSection + (restHtml || '<div class="empty">No upcoming tasks.</div>');
+  const inner = sections.filter(s => groups[s.key].length).map(s => {
+    const items = s.key === 'none' ? groups[s.key] : groups[s.key].sort(byDate);
+    return `<div class="section">
+      <div class="section-title" style="color:${s.color}">${s.label} &mdash; ${items.length} task${items.length !== 1 ? 's' : ''}</div>
+      <table class="task-table"><tbody>${items.map(t => upcomingRow(t)).join('')}</tbody></table>
+    </div>`;
+  }).join('');
+  return `<div class="section-title" style="margin:6px 0 10px">📋 All tasks &mdash; drag onto a day above, or use 📌 to plan for today</div>`
+       + (inner || '<div class="empty">No upcoming tasks.</div>');
 }
 
-function upcomingRow(t, pinned) {
+function upcomingRow(t) {
   const pillClass = deadlinePillClass(parseDeadline(t.deadline));
   const deadlineHtml = t.deadline
     ? `<span class="deadline-pill ${pillClass}">${escHtml(t.deadline)}</span>`
     : '';
   const meta = [t.sheet, t.hours ? `⏱ ${t.hours}h` : ''].filter(Boolean).join('  ·  ');
-  const pinBtn = pinned
-    ? `<button class="icon-btn" title="Remove from today" onclick="removeFromTodayPlan('${jsStr(t.sheet)}',${t.row})">✕</button>`
-    : `<button class="icon-btn" title="Add to today" onclick="addToTodayPlan('${jsStr(t.sheet)}',${t.row})">📌</button>`;
   return `<tr class="task-row" draggable="true" data-sheet="${escHtml(t.sheet)}" data-row="${t.row}"
-             ondragstart="onDragUpcomingTask(event)" ondragend="event.currentTarget.classList.remove('dragging-task')">
+             ondragstart="onBacklogDragStart(event)" ondragend="event.currentTarget.classList.remove('dragging-task')">
     <td style="width:100%">
       <div class="task-text">${escHtml(t.task)}</div>
       ${meta ? `<div class="task-meta">${escHtml(meta)}</div>` : ''}
@@ -2358,7 +2802,7 @@ function upcomingRow(t, pinned) {
       </span>
     </td>
     <td style="white-space:nowrap">
-      ${pinBtn}
+      <button class="icon-btn" title="Add to today's plan" onclick="addPlanToDay('${jsStr(t.sheet)}',${t.row},todayIso())">📌</button>
       <button class="icon-btn" title="Edit" onclick="openEditModal('${jsStr(t.sheet)}',${t.row})">✏️</button>
       <button class="icon-btn" title="Delete" onclick="deleteTask('${jsStr(t.sheet)}',${t.row})">🗑</button>
     </td>
@@ -2446,65 +2890,115 @@ document.addEventListener('click', () => {
   document.getElementById('today-picker').classList.remove('open');
 });
 
-// ── Plan for today ───────────────────────────────────────────────────────
+// ── Weekly planner ─────────────────────────────────────────────────────────
+// Plan entries live server-side in the _plan sheet (via /api/plan), keyed by an
+// explicit ISO day — so a planned task never vanishes at midnight; it just sits
+// on its date. `order` is its priority within the day; `hours` is an estimate.
 
-let _todayPlanCache = null;
-
-function todayKey() {
-  const d = new Date();
+function isoDay(d) {
   return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
+function todayIso() { return isoDay(new Date()); }
+function startOfToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
+function weekDates(offset) {
+  // Rolling 7-day window starting today (offset shifts it by whole weeks).
+  const base = startOfToday(); base.setDate(base.getDate() + offset * 7);
+  return Array.from({ length: 7 }, (_, i) => { const x = new Date(base); x.setDate(base.getDate() + i); return x; });
+}
+function changeWeek(delta) { _weekOffset += delta; renderContent(); }
+function gotoThisWeek() { _weekOffset = 0; renderContent(); }
 
-function getTodayPlan() {
-  const storageKey = demoMode ? 'todayPlanDemo' : 'todayPlan';
-  if (_todayPlanCache && _todayPlanCache._storageKey === storageKey) return _todayPlanCache;
-  let raw;
-  try { raw = JSON.parse(localStorage.getItem(storageKey) || 'null'); } catch (e) { raw = null; }
-  if (!raw || raw.date !== todayKey()) raw = { date: todayKey(), keys: [] };
-  raw._storageKey = storageKey;
-  _todayPlanCache = raw;
-  return raw;
+function taskFor(project, taskRow) {
+  return (allTasks[project] || []).find(t => t.row === taskRow) || null;
+}
+function planEntry(project, taskRow, day) {
+  return allPlan.find(p => p.project === project && p.task_row === taskRow && p.day === day);
 }
 
-function saveTodayPlan() {
-  const { _storageKey, ...plan } = _todayPlanCache;
-  localStorage.setItem(_storageKey, JSON.stringify(plan));
+async function addPlanToDay(project, taskRow, day) {
+  if (guardDemo()) return;
+  if (planEntry(project, Number(taskRow), day)) { renderContent(); return; }  // already planned that day
+  const dayEntries = allPlan.filter(p => p.day === day);
+  const order = dayEntries.length ? Math.max(...dayEntries.map(p => p.order)) + 1 : 0;
+  await fetch('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project, task_row: Number(taskRow), day, order, hours: '' }) });
+  await loadPlan(); refreshSyncStatus(); renderContent();
 }
 
-function addToTodayPlan(sheet, row) {
-  const plan = getTodayPlan();
-  const key = `${sheet}::${row}`;
-  if (!plan.keys.includes(key)) { plan.keys.push(key); saveTodayPlan(); }
-  renderContent();
+async function removePlan(row) {
+  if (guardDemo()) return;
+  await fetch(`/api/plan/${row}`, { method: 'DELETE' });
+  await loadPlan(); refreshSyncStatus(); renderContent();
 }
 
-function removeFromTodayPlan(sheet, row) {
-  const plan = getTodayPlan();
-  const key = `${sheet}::${row}`;
-  plan.keys = plan.keys.filter(k => k !== key);
-  saveTodayPlan();
-  renderContent();
+async function setPlanHours(row, val) {
+  if (guardDemo()) return;
+  await fetch(`/api/plan/${row}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hours: val }) });
+  await loadPlan(); refreshSyncStatus(); renderContent();
 }
 
-function onDragUpcomingTask(e) {
-  e.dataTransfer.effectAllowed = 'move';
-  e.dataTransfer.setData('text/plain', JSON.stringify({ sheet: e.currentTarget.dataset.sheet, row: e.currentTarget.dataset.row }));
+async function movePlanToDay(row, day) {
+  if (guardDemo()) return;
+  const p = allPlan.find(x => x.row === row); if (!p || p.day === day) return;
+  const dayEntries = allPlan.filter(x => x.day === day);
+  const order = dayEntries.length ? Math.max(...dayEntries.map(x => x.order)) + 1 : 0;
+  await fetch(`/api/plan/${row}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ day, order }) });
+  await loadPlan(); refreshSyncStatus(); renderContent();
+}
+
+async function movePlanRank(row, dir) {
+  if (guardDemo()) return;
+  const p = allPlan.find(x => x.row === row); if (!p) return;
+  const entries = allPlan.filter(x => x.day === p.day).sort((a, b) => (a.order - b.order) || (a.row - b.row));
+  const idx = entries.findIndex(x => x.row === row);
+  const swap = idx + dir;
+  if (swap < 0 || swap >= entries.length) return;
+  entries.splice(swap, 0, entries.splice(idx, 1)[0]);   // reorder locally
+  // Persist any entry whose position (=new order) changed.
+  const puts = [];
+  entries.forEach((e, i) => {
+    if (e.order !== i) puts.push(fetch(`/api/plan/${e.row}`, { method: 'PUT',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ order: i }) }));
+  });
+  if (puts.length) await Promise.all(puts);
+  await loadPlan(); refreshSyncStatus(); renderContent();
+}
+
+// ── Planner drag & drop ──
+function onBacklogDragStart(e) {
+  e.dataTransfer.effectAllowed = 'copy';
+  e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'task',
+    sheet: e.currentTarget.dataset.sheet, row: Number(e.currentTarget.dataset.row) }));
   e.currentTarget.classList.add('dragging-task');
 }
-
-function onDropToday(e) {
-  e.preventDefault();
-  e.currentTarget.classList.remove('drag-over');
-  let data;
-  try { data = JSON.parse(e.dataTransfer.getData('text/plain')); } catch (err) { return; }
-  if (!data || !data.sheet || !data.row) return;
-  addToTodayPlan(data.sheet, Number(data.row));
+function onPlanCardDragStart(e, row) {
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'plan', row }));
+  e.currentTarget.classList.add('dragging-task');
+}
+function onDayDragOver(e) {
+  e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+  e.currentTarget.classList.add('drag-over');
+}
+async function onDayDrop(e, day) {
+  e.preventDefault(); e.currentTarget.classList.remove('drag-over');
+  let data; try { data = JSON.parse(e.dataTransfer.getData('text/plain')); } catch (_) { return; }
+  if (!data) return;
+  if (data.type === 'task') await addPlanToDay(data.sheet, data.row, day);
+  else if (data.type === 'plan') await movePlanToDay(data.row, day);
 }
 
-function openTodayPicker(e) {
+// ── Add-to-day picker (reuses #today-picker) ──
+function openDayPicker(e, day) {
   e.stopPropagation();
+  _planPickerDay = day;
   const picker = document.getElementById('today-picker');
   picker.classList.add('open');
+  const d = new Date(day + 'T00:00:00');
+  document.getElementById('today-picker-head').textContent =
+    'Add to ' + d.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' });
   document.getElementById('today-picker-search').value = '';
   renderTodayPickerList();
   const ph = picker.offsetHeight, pw = picker.offsetWidth;
@@ -2520,14 +3014,14 @@ function closeTodayPicker() {
 
 function renderTodayPickerList() {
   const q = document.getElementById('today-picker-search').value.trim().toLowerCase();
-  const plan = getTodayPlan();
+  const day = _planPickerDay;
+  const planned = new Set(allPlan.filter(p => p.day === day).map(p => p.project + '::' + p.task_row));
   const list = document.getElementById('today-picker-list');
   const items = [];
   Object.entries(allTasks).forEach(([sheet, tasks]) => {
     tasks.forEach(t => {
       if (t.status === 'Completed') return;
-      const key = `${sheet}::${t.row}`;
-      if (plan.keys.includes(key)) return;
+      if (planned.has(sheet + '::' + t.row)) return;
       if (q && !t.task.toLowerCase().includes(q) && !sheet.toLowerCase().includes(q)) return;
       items.push({ ...t, sheet });
     });
@@ -2537,7 +3031,7 @@ function renderTodayPickerList() {
     return;
   }
   list.innerHTML = items.slice(0, 40).map(t => `
-    <div class="today-picker-item" onclick="addToTodayPlan('${jsStr(t.sheet)}',${t.row});closeTodayPicker();">
+    <div class="today-picker-item" onclick="addPlanToDay('${jsStr(t.sheet)}',${t.row},'${jsStr(day)}');closeTodayPicker();">
       <div>${escHtml(t.task)}</div>
       <div class="tpi-sheet">${escHtml(t.sheet)}${t.deadline ? ' &middot; ' + escHtml(t.deadline) : ''}</div>
     </div>

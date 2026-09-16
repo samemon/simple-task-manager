@@ -33,15 +33,25 @@ Everything lives in `app.py`:
 - `@app.route("/")` returns this string directly — no templates, no static files
 
 ### Two operating modes
-`LOCAL_MODE = not bool(SHEET_ID)` — set at startup, never changes at runtime.
+`REMOTE_ENABLED = bool(SHEET_ID) and _GSPREAD_AVAILABLE`; `LOCAL_MODE = not REMOTE_ENABLED`. Set at startup, never changes at runtime.
 
 | Mode | Storage | Triggered by |
 |------|---------|--------------|
-| Google Sheets | gspread + service account | `config.py` present with a valid `SHEET_ID` |
-| Local | `local_data.json` | No `config.py`, or `SHEET_ID` is empty |
+| **Dual** (local + Sheets, offline-capable) | `~/.research-tasks/local_data.json` mirror **is the read/source of truth**; every edit is also mirrored to Google Sheets — live when online, or journalled and replayed on reconnect | `config.py` with a valid `SHEET_ID` (+ gspread importable) |
+| Local only | the same mirror file | No `config.py`, or `SHEET_ID` empty, or gspread missing |
 
-### `_LocalWS` — the local-mode shim
-All mutation routes call methods on a worksheet object (`ws.update(...)`, `ws.append_row(...)`, `ws.delete_rows(...)`). In local mode, `_LocalWS` provides the same interface backed by the in-memory caches + `_local_save()`. This means **all API routes work unchanged in both modes** — never add mode-specific branches inside a route; put them in `_LocalWS` instead. (`append_meta_cache`/`delete_meta_cache_row` are a narrow, deliberate exception — see below — because those two operations are not idempotent and `_LocalWS` already applies them internally.)
+Reads **never hit the network** in either mode — they come from the in-memory caches, which are loaded from the mirror on first use. First launch with an empty (or pre-dual, `schema < 2`) mirror does a one-time read-only **seed pull** from Sheets, then trusts the mirror.
+
+### Offline journal & sync (dual mode)
+The whole sheet is **never rewritten** — there is no blind overwrite. Each edit makes the same surgical per-row call it always did:
+- `_enqueue_or_apply(op)` — if the pending journal is empty and online, apply the op to Sheets now; otherwise append it to `_pending_ops` (persisted in the mirror) and mark offline.
+- `_drain_pending()` — replay the journal to Sheets **in order**, stopping at the first failure (keeps the rest queued). Runs on: first load, a background daemon thread (`_sync_loop`, every `SYNC_INTERVAL`s, only while something is pending), and `POST /api/sync`.
+- `_apply_remote_op` / `_remote_ws` — perform one op; the remote tab is auto-created (with headers) on first write.
+- Mirror writes are atomic (`temp + os.replace`) so a crash mid-write can't corrupt it.
+- `sync_status()` → `{remote_enabled, local_mode, online, pending, last_synced}`; the frontend polls `/api/status` and shows a **Synced / Offline (N pending) / Syncing** pill.
+
+### `_LocalWS` / `_DualWS` — the storage shims
+All mutation routes call `ws.update(...)`, `ws.append_row(...)`, `ws.delete_rows(...)`. `_LocalWS` backs those with the in-memory caches + `_local_save()`. `_DualWS(_LocalWS)` does the same **and** mirrors the op to Sheets via `_enqueue_or_apply` (live or journalled). `get_worksheet`/`ensure_meta_ws` return a `_DualWS` when `REMOTE_ENABLED` else a `_LocalWS` (via `_make_ws`). **All API routes work unchanged across modes** — never add mode branches inside a route. (`append_meta_cache`/`delete_meta_cache_row` skip when `isinstance(ws, _LocalWS)` — true for `_DualWS` too — because those ops are not idempotent and the shim already applied them to the cache.)
 
 ### In-memory cache
 ```
@@ -49,14 +59,17 @@ _data_cache   = {}   # {project_name: [rows]}
 _notes_cache  = []   # rows from _notes sheet
 _collabs_cache= []   # rows from _collabs sheet
 _lit_cache    = []   # rows from _literature sheet
-_ws_cache     = {}   # {title: worksheet object or _LocalWS}
+_plan_cache   = []   # rows from _plan sheet
+_pending_ops  = []   # journalled Sheets ops awaiting replay (dual mode, persisted in the mirror)
+_ws_cache     = {}   # {title: _LocalWS/_DualWS}
 DATA_CACHE_TTL = float('inf')  # never auto-expire
 ```
 
-**Never read from Sheets on every request, and never force a full re-fetch for a single-row edit.** Every mutation patches its own cache array in place instead:
-- Tasks: `ws.update(...)` then `patch_cache(sheet, row, values)` — updates one row in `_data_cache` without a network read. Safe to call even though `_LocalWS.update()` already patches the same cache internally (idempotent — same row, same values).
-- Notes/collabs/literature: `ws.update(...)` then `patch_meta_cache(cache_list, row, values)` (same idempotent-so-always-safe pattern). For `ws.append_row(...)` and `ws.delete_rows(...)`, use `append_meta_cache(cache_list, ws, values)` / `delete_meta_cache_row(cache_list, ws, row)` instead — these two are **not** idempotent (append would duplicate the row, delete would remove an extra one), and `_LocalWS.append_row()`/`.delete_rows()` already mutate the cache as part of local-mode persistence, so the helper is a no-op there and only touches the cache for the real-Sheets `ws` (checked via `isinstance(ws, _LocalWS)`).
-- `invalidate_cache()` — zeroes all caches, forcing the next read to do a full `_fetch_all()` re-fetch of every worksheet. Reserved for `POST /api/sync` only — **do not call it from a mutation route**; a burst of `invalidate_cache()`-then-refetch calls (e.g. scripting several edits back to back) can exhaust Google's per-minute read quota and start returning 500s, which is exactly what patch/append/delete-in-place avoids.
+**Reads come from the caches (loaded once from the mirror); writes patch the cache in place and never trigger a full re-fetch.** Every mutation:
+- Tasks: `ws.update(...)` then `patch_cache(sheet, row, values)` — updates one row in `_data_cache`. Idempotent, so safe even though the shim's `update()` already patched the same cache.
+- Notes/collabs/literature/plan: `ws.update(...)` then `patch_meta_cache(cache_list, row, values)` (same idempotent pattern). For `ws.append_row(...)` / `ws.delete_rows(...)`, use `append_meta_cache(cache_list, ws, values)` / `delete_meta_cache_row(cache_list, ws, row)` — **not** idempotent, and the shim already applied them to the cache, so they no-op when `isinstance(ws, _LocalWS)` (true for `_DualWS`) and only run for a raw gspread `ws`.
+- `_local_save()` persists all caches + `_pending_ops` after each mutation (atomically).
+- `invalidate_cache()` / `_reset_caches()` — zero the caches; `invalidate_cache` also resets the load timestamp. **Do not call from a mutation route.** `POST /api/sync` no longer re-pulls; it drains the journal. A full seed pull happens only via `_try_pull_from_remote()` on an empty/pre-dual mirror.
 
 ### Row numbering
 Sheets rows are **1-indexed**. Row 1 is always the header row. `parse_tasks()` skips `rows[1:]`, so tasks start at row 2. When creating a new project, always initialise `_data_cache[name] = [TASK_HEADERS]` (not `[]`) so the first added task lands at row 2, not row 1.
@@ -83,10 +96,14 @@ Sheets rows are **1-indexed**. Row 1 is always the header row. `parse_tasks()` s
 | POST | `/api/literature` | Add reference — body: `{project, title, link, authors, year, notes}` |
 | PUT | `/api/literature/<row>` | Edit reference |
 | DELETE | `/api/literature/<row>` | Delete reference |
+| GET | `/api/plan` | All weekly-plan entries |
+| POST | `/api/plan` | Plan a task — body: `{project, task_row, day (ISO), order, hours}` |
+| PUT | `/api/plan/<row>` | Edit a plan entry (day / order / hours) |
+| DELETE | `/api/plan/<row>` | Remove a plan entry |
 | POST | `/api/projects` | Create project (sheet tab) |
 | DELETE | `/api/projects/<name>` | Delete project |
-| POST | `/api/sync` | Force full re-fetch from Sheets |
-| GET | `/api/status` | Returns `{local_mode: bool}` |
+| POST | `/api/sync` | Drain the pending offline journal to Sheets (never overwrites local); returns sync status |
+| GET | `/api/status` | Returns `{remote_enabled, local_mode, online, pending, last_synced}` |
 
 All mutation routes use `request.get_json(silent=True) or {}` — never `request.json`.
 
@@ -100,10 +117,11 @@ Each project tab: columns A–F
 |---|---|---|---|---|---|
 | Deadline | Task | Hours | Status | Completed Date | Assignee |
 
-Three hidden meta-tabs (never delete or rename):
+Four hidden meta-tabs (never delete or rename; all in `META_SHEETS`):
 - `_notes` — columns: Project, Note, Importance, Purpose, Color, Created, Modified
 - `_collabs` — columns: Project, Name, Role
 - `_literature` — columns: Project, Title, Link, Authors, Year, Notes, Created, Modified
+- `_plan` — columns: Project, TaskRow, Day (ISO `YYYY-MM-DD`), Order, Hours, Created, Modified
 
 ---
 
@@ -126,7 +144,7 @@ _projectOrder = string[] | null  // custom sidebar order from localStorage
 ```
 renderContent()          ← always calls updateTopbar() first
   ├── renderTasks()      — task list + garden view
-  ├── renderUpcoming()   — deadline-grouped tasks
+  ├── renderUpcoming()   — weekly planner board (rolling 7 days from today) + deadline-grouped backlog
   ├── renderNotes()      — note cards
   ├── renderLiterature() / renderLiteratureCards() — two-column per-project cards, scrollable, searchable, .bib export
   ├── renderCollaborators()
@@ -199,8 +217,8 @@ Five CSS variable sets in `THEMES` object. `applyTheme(name)` writes all `--` va
 - Bulk status change: checkbox-select multiple tasks, apply status to all
 - Search: real-time filter across all projects
 - Export CSV: current project or all projects
-- Upcoming view: tasks grouped Overdue / Today / This Week / This Month / Later
-- Plan for Today: pinned section above Overdue in the Upcoming view — drag any task row onto it, or click its `+` to search-and-add a task, to build a daily working list independent of deadline. Stored client-side (`localStorage`), resets automatically each calendar day
+- Upcoming view: a **weekly planner board** (a rolling 7-day window starting **today**, horizontally scrollable, prev/next-week nav + a "Today" reset, today's column highlighted and labelled "Today"; each column scrolls vertically) over a **backlog** of all incomplete tasks grouped Overdue / Today / This Week / This Month / Later. Drag a backlog task onto a day to plan it, drag a plan card between days to move it, or use a day's `+` picker / a backlog row's 📌 (plan for today). Each plan card shows a **priority rank** with ▲▼ to reorder, and an **estimated-hours** input; per-day and week hour totals are summed in the headers. Plans are stored server-side in `_plan` by explicit date, so nothing disappears at midnight.
+- Offline / dual sync: works with no internet off the local mirror; edits journal and replay to Google Sheets on reconnect. A topbar pill shows **Synced / Offline (N pending) / Syncing**; the **Sync** button pushes the journal.
 - Stats view: overall %, hours logged, by-status breakdown, per-project bars
 - Notes: rich text editor (bold/italic/underline/bullets/numbered lists), title, font family (5), font size; importance + purpose tags; color swatches; sorted newest-first
 - Literature: references grouped into a colored card per project (same visual language as GarDone/Garden — top border + tinted header use the project's `FLOWER_DEFS` accent, plus a small bloomed flower icon with one petal per reference), laid out two cards per row with each card's reference list independently scrollable (`.lit-card-body`, `max-height` + `overflow-y`); each row shows the title as a clickable link (URL itself hidden), a 🗒 button that toggles a hidden notes/annotation panel, edit and delete; add/edit via modal (title, link, authors, year, notes); project filter dropdown + title search box (`#l-search`) — the toolbar is only built once per view-entry (guarded by `if (!document.getElementById('lit-toolbar'))`) so retyping in the search box never rebuilds and steals focus from itself, it just re-renders `#lit-cards-wrap` via `renderLiteratureCards()`; client-side `.bib` export (per-project or all) for import into Zotero/reference managers
@@ -256,10 +274,10 @@ These map directly to CSS classes (`imp-High`, `pur-Design`, etc.) — adding ne
 ## Google Sheets specifics
 
 ### Rate limiting (429)
-`_fetch_all()` retries up to 5 times with exponential backoff on 429 errors. The `float('inf')` TTL cache means normal usage never hits Sheets twice — only `POST /api/sync` triggers a full re-read. If you add new read paths, route them through the cache, not direct Sheets calls.
+`_try_pull_from_remote()` (the one-time seed pull) retries up to 5 times with exponential backoff on 429. Because reads come from the mirror and writes are surgical per-row (not full-sheet rewrites), normal usage barely touches the API. Never add a read path that hits Sheets on every request — read from the caches.
 
 ### Sheet tab names
-`_notes` and `_collabs` are reserved meta-tabs. `META_SHEETS` set prevents them from appearing as projects. Any new meta-tab must be added to `META_SHEETS`.
+`_notes`, `_collabs`, `_literature`, and `_plan` are reserved meta-tabs. The `META_SHEETS` set keeps them out of the project list. Any new meta-tab must be added to `META_SHEETS`.
 
 ### gspread availability
 `_GSPREAD_AVAILABLE` flag — gspread is optional. The app imports it in a try/except. In local mode gspread is never called. Do not call any gspread API outside of the `if not LOCAL_MODE` paths.
@@ -272,7 +290,8 @@ These map directly to CSS classes (`imp-High`, `pur-Design`, etc.) — adding ne
 | `sidebarWidth` | integer px | sidebar resize handler |
 | `projectOrder` | JSON array of project names | sidebar drag-to-reorder |
 | `demoMode` | `"1"` \| `"0"` | `toggleDemoMode()` |
-| `todayPlan` / `todayPlanDemo` | `{date: "YYYY-MM-DD", keys: ["sheet::row", ...]}` | `saveTodayPlan()` — the `Demo` variant is used while `demoMode` is on, so pins don't bleed between real and demo data; a stored `date` other than today is discarded on next read |
+
+The weekly plan is **no longer in localStorage** — it lives in the `_plan` sheet (via `/api/plan`), keyed by explicit ISO day, so a planned task never disappears at midnight and it syncs like everything else.
 
 ## CSS architecture
 
@@ -284,7 +303,7 @@ Note badge classes: `imp-High`, `imp-Medium`, `imp-Low`, `pur-Design`, etc.
 
 ## Demo mode architecture
 
-`DEMO_DATA` is a JS constant (baked into the HTML string) containing 14 projects, 52 tasks, 47 collaborators, 2 notes, and 2 literature references — matching the rough scale of real data.
+`DEMO_DATA` is a JS constant (baked into the HTML string) containing 14 projects, 52 tasks, 47 collaborators, 2 notes, 2 literature references, and an empty `plan` — matching the rough scale of real data.
 
 `demoMode` is read from `localStorage` on startup. When true:
 - `loadSheets/loadTasks/loadNotes/loadCollabs` return shallow copies of `DEMO_DATA` instead of hitting the API
