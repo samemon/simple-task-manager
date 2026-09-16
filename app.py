@@ -2920,8 +2920,10 @@ async function addPlanToDay(project, taskRow, day) {
   if (planEntry(project, Number(taskRow), day)) { renderContent(); return; }  // already planned that day
   const dayEntries = allPlan.filter(p => p.day === day);
   const order = dayEntries.length ? Math.max(...dayEntries.map(p => p.order)) + 1 : 0;
+  const t = taskFor(project, Number(taskRow));
+  const hours = (t && t.hours) ? t.hours : '';   // prefill from the task's estimate, else empty
   await fetch('/api/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ project, task_row: Number(taskRow), day, order, hours: '' }) });
+    body: JSON.stringify({ project, task_row: Number(taskRow), day, order, hours }) });
   await loadPlan(); refreshSyncStatus(); renderContent();
 }
 
