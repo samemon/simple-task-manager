@@ -9,6 +9,8 @@ import json
 import os
 import re
 import sys
+import shlex
+import subprocess
 import pathlib
 import shutil
 from flask import Flask, jsonify, request, render_template_string
@@ -934,6 +936,30 @@ def api_status():
     return jsonify(sync_status())
 
 
+@app.route("/api/restart", methods=["POST"])
+def api_restart():
+    """Relaunch the app so it reloads app.py from disk. Data is safe (mirror +
+    pending journal persist). We can't os.execv() in-place because werkzeug's
+    listening socket would be inherited and the relaunch couldn't rebind the port.
+    Instead: spawn a detached launcher that retries the original command until the
+    port frees, then exit this process (releasing the port)."""
+    def _restart():
+        time.sleep(0.4)   # let this response flush to the browser first
+        try:
+            if REMOTE_ENABLED:
+                _drain_pending()
+        except Exception:
+            pass
+        cmd = " ".join(shlex.quote(a) for a in [sys.executable] + sys.argv)
+        # Retry the launch for ~30s so it binds as soon as we release the socket.
+        script = f"for i in $(seq 1 60); do {cmd} && break; sleep 0.5; done"
+        subprocess.Popen(["/bin/sh", "-c", script], start_new_session=True,
+                         cwd=os.getcwd(), env={**os.environ, "KAAMKAAJ_NO_BROWSER": "1"})
+        os._exit(0)   # release the port; the detached launcher will bind next
+    threading.Thread(target=_restart, daemon=True).start()
+    return jsonify({"ok": True})
+
+
 # ── Projects API ──────────────────────────────────────────────────────────────
 
 @app.route("/api/projects", methods=["POST"])
@@ -1277,10 +1303,20 @@ HTML = r"""<!DOCTYPE html>
   }
   #l-sort { padding: 6px 10px; border: 1.5px solid var(--border); border-radius: 7px;
             font-size: 13px; font-family: inherit; background: var(--surface); color: var(--text); }
-  .lit-read-toggle { background: none; border: none; cursor: pointer; font-size: 14px;
-                     padding: 2px 4px; line-height: 1; vertical-align: middle; }
+  .lit-read-toggle {
+    border: 1.5px solid var(--border); background: var(--surface); color: var(--text-muted);
+    border-radius: 20px; padding: 2px 10px; font-size: 11px; font-weight: 700; cursor: pointer;
+    white-space: nowrap; vertical-align: middle; transition: background 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .lit-read-toggle:hover { border-color: var(--text-muted); }
+  .lit-read-toggle.is-read { background: #D4EDDA; border-color: #38A169; color: #22643A; }
   .lit-row.read .lit-title a, .lit-row.read .lit-title { color: var(--text-muted); }
   .lit-row.read { opacity: 0.72; }
+  .lit-card-add {
+    background: none; border: none; cursor: pointer; font-size: 20px; font-weight: 700;
+    line-height: 1; padding: 0 6px; opacity: 0.75; flex-shrink: 0;
+  }
+  .lit-card-add:hover { opacity: 1; }
 
   /* ── Inline project extras ── */
   .project-extras { margin-top: 10px; margin-bottom: 6px; display: flex; flex-direction: column; gap: 8px; }
@@ -1353,6 +1389,14 @@ HTML = r"""<!DOCTYPE html>
     transition: background 0.15s;
   }
   #new-project-btn:hover { background: rgba(255,255,255,0.15); color: #fff; }
+  #restart-btn-side {
+    width: 100%; margin-top: 6px; padding: 7px 8px; background: none;
+    border: 1px solid rgba(255,255,255,0.15); border-radius: 6px;
+    color: var(--sidebar-text); font-size: 12px; cursor: pointer; text-align: center;
+    transition: background 0.15s;
+  }
+  #restart-btn-side:hover { background: rgba(255,255,255,0.12); color: #fff; }
+  #restart-btn-side:disabled { opacity: 0.6; cursor: default; }
 
   /* Demo mode toggle */
   .demo-toggle-wrap {
@@ -1812,6 +1856,7 @@ HTML = r"""<!DOCTYPE html>
   <div id="sheet-list"></div>
   <div id="sidebar-footer">
     <button id="new-project-btn" onclick="openNewProjectModal()">+ New Project</button>
+    <button id="restart-btn-side" onclick="restartApp()" title="Relaunch the app to load the latest code (your data is saved)">⟳ Restart app</button>
     <div class="demo-toggle-wrap">
       <span class="demo-toggle-label">Demo Mode</span>
       <label class="demo-switch">
@@ -2414,6 +2459,25 @@ async function refreshSyncStatus() {
   } else {
     setSyncPill('synced', 'Synced');
   }
+}
+
+async function restartApp() {
+  if (demoMode) { alert('Turn off Demo Mode first.'); return; }
+  if (!confirm('Restart the app to load the latest code?\n\nYour data is saved (local mirror + Google Sheet). The page will reload automatically.')) return;
+  const btn = document.getElementById('restart-btn-side');
+  if (btn) { btn.disabled = true; btn.textContent = '⟳ Restarting…'; }
+  try { await fetch('/api/restart', { method: 'POST' }); } catch (e) {}
+  // Poll until the server is back up, then reload.
+  const t0 = Date.now();
+  const poll = async () => {
+    try {
+      const r = await fetch('/api/status', { cache: 'no-store' });
+      if (r.ok) { location.reload(); return; }
+    } catch (e) {}
+    if (Date.now() - t0 < 30000) setTimeout(poll, 700);
+    else { if (btn) { btn.disabled = false; btn.textContent = '⟳ Restart app'; } alert('Restart is taking longer than expected — try reloading the page.'); }
+  };
+  setTimeout(poll, 1500);
 }
 
 function startSyncPolling() {
@@ -3446,6 +3510,8 @@ function renderLiteratureCards() {
           <div class="lit-card-title" style="color:${fd.center}">${escHtml(project)}</div>
           <div class="lit-card-count" style="color:${fd.stroke}">${refs.length} reference${refs.length !== 1 ? 's' : ''}</div>
         </div>
+        <button class="lit-card-add" title="Add a reference to ${escHtml(project)}"
+                style="color:${fd.center}" onclick="openLitModalForProject('${jsStr(project)}')">+</button>
       </div>
       <div class="lit-card-body"><table class="task-table"><tbody>${rows}</tbody></table></div>
     </div>`;
@@ -3459,8 +3525,8 @@ function litRow(l) {
     ? `<a href="${escHtml(l.link)}" target="_blank" rel="noopener noreferrer">${escHtml(l.title)}</a>`
     : escHtml(l.title);
   const metaParts = [l.authors, l.year].filter(Boolean);
-  const readBtn = `<button class="lit-read-toggle" title="${l.read ? 'Read — click to mark unread' : 'Unread — click to mark read'}"
-      onclick="toggleRead(${l.row}, ${l.read ? 0 : 1})">${l.read ? '✅' : '⬜'}</button>`;
+  const readBtn = `<button class="lit-read-toggle ${l.read ? 'is-read' : ''}" title="Toggle read / to-read"
+      onclick="toggleRead(${l.row}, ${l.read ? 0 : 1})">${l.read ? '✓ Read' : 'To read'}</button>`;
   return `<tr class="task-row lit-row ${l.read ? 'read' : ''}">
     <td style="width:100%">
       <div class="lit-title">${titleHtml}</div>
@@ -3481,11 +3547,15 @@ function toggleLitNote(row) {
   if (el) el.hidden = !el.hidden;
 }
 
-async function toggleRead(row, val) {
+// Optimistic: flip the local flag + re-render instantly, then persist in the
+// background (no awaited GET) so there's no lag. Offline writes just queue.
+function toggleRead(row, val) {
   if (guardDemo()) return;
-  await fetch(`/api/literature/${row}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ read: !!val }) });
-  await loadLiterature(); refreshSyncStatus(); renderContent();
+  const l = allLiterature.find(x => x.row === row);
+  if (l) l.read = !!val;
+  renderLiteratureCards();
+  fetch(`/api/literature/${row}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ read: !!val }) }).then(() => refreshSyncStatus()).catch(() => {});
 }
 
 function openLitModal(row = null) {
@@ -3515,6 +3585,12 @@ function openLitModal(row = null) {
     document.getElementById('l-notes').value   = '';
   }
   document.getElementById('lit-modal').classList.add('open');
+}
+
+function openLitModalForProject(project) {
+  openLitModal(null);
+  const sel = document.getElementById('l-project');
+  if (sel) sel.value = project;
 }
 
 function closeLitModal() {
@@ -4335,5 +4411,7 @@ def index():
 
 
 if __name__ == "__main__":
-    threading.Timer(1.0, lambda: webbrowser.open("http://localhost:8080")).start()
+    # Don't reopen a browser tab when we relaunch ourselves via /api/restart.
+    if os.environ.get("KAAMKAAJ_NO_BROWSER") != "1":
+        threading.Timer(1.0, lambda: webbrowser.open("http://localhost:8080")).start()
     app.run(host='127.0.0.1', port=8080, debug=False)
