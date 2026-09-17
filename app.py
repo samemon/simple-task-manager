@@ -59,7 +59,7 @@ IMPORTANCES    = ["High", "Medium", "Low"]
 PURPOSES       = ["Design", "Writing", "Analysis", "Planning", "Other"]
 NOTE_HEADERS   = ["Project", "Note", "Importance", "Purpose", "Color", "Created", "Modified"]
 COLLAB_HEADERS = ["Project", "Name", "Role"]
-LIT_HEADERS    = ["Project", "Title", "Link", "Authors", "Year", "Notes", "Created", "Modified"]
+LIT_HEADERS    = ["Project", "Title", "Link", "Authors", "Year", "Notes", "Created", "Modified", "Read"]
 PLAN_HEADERS   = ["Project", "TaskRow", "Day", "Order", "Hours", "Created", "Modified"]
 
 app = Flask(__name__)
@@ -571,6 +571,7 @@ def parse_literature(rows):
             "notes":    row[5].strip() if len(row) > 5 else "",
             "created":  row[6].strip() if len(row) > 6 else "",
             "modified": row[7].strip() if len(row) > 7 else "",
+            "read":     (row[8].strip().lower() in ("1", "true", "yes", "y", "x")) if len(row) > 8 else False,
         })
     return lit
 
@@ -816,7 +817,7 @@ def api_add_literature():
     new_row = [
         data["project"], data["title"], data.get("link", ""),
         data.get("authors", ""), data.get("year", ""), data.get("notes", ""),
-        today, today,
+        today, today, ("1" if data.get("read") else ""),
     ]
     ws.append_row(new_row)
     append_meta_cache(_lit_cache, ws, new_row)
@@ -829,8 +830,9 @@ def api_update_literature(row):
     ws = ensure_meta_ws(LIT_SHEET, LIT_HEADERS)
     rows = get_literature_data()
     current = list(rows[row - 1]) if row - 1 < len(rows) else []
-    while len(current) < 8:
+    while len(current) < 9:
         current.append("")
+    read_val = ("1" if data["read"] else "") if "read" in data else current[8]
     updated = [
         data.get("project", current[0]),
         data.get("title",   current[1]),
@@ -840,8 +842,9 @@ def api_update_literature(row):
         data.get("notes",   current[5]),
         current[6],   # created unchanged
         _today(),     # modified = today
+        read_val,
     ]
-    ws.update(range_name=f"A{row}:H{row}", values=[updated])
+    ws.update(range_name=f"A{row}:I{row}", values=[updated])
     patch_meta_cache(_lit_cache, row, updated)
     return jsonify({"ok": True})
 
@@ -1272,6 +1275,12 @@ HTML = r"""<!DOCTYPE html>
     font-size: 11.5px; color: var(--text); line-height: 1.5;
     white-space: pre-wrap; word-break: break-word;
   }
+  #l-sort { padding: 6px 10px; border: 1.5px solid var(--border); border-radius: 7px;
+            font-size: 13px; font-family: inherit; background: var(--surface); color: var(--text); }
+  .lit-read-toggle { background: none; border: none; cursor: pointer; font-size: 14px;
+                     padding: 2px 4px; line-height: 1; vertical-align: middle; }
+  .lit-row.read .lit-title a, .lit-row.read .lit-title { color: var(--text-muted); }
+  .lit-row.read { opacity: 0.72; }
 
   /* ── Inline project extras ── */
   .project-extras { margin-top: 10px; margin-bottom: 6px; display: flex; flex-direction: column; gap: 8px; }
@@ -3381,6 +3390,11 @@ function renderLiterature() {
       <div class="notes-toolbar" id="lit-toolbar">
         <select id="l-filter-project" onchange="renderLiteratureCards()">${projectOpts}</select>
         <input id="l-search" type="search" class="lit-search-input" placeholder="🔍 Search titles…" oninput="renderLiteratureCards()">
+        <select id="l-sort" onchange="renderLiteratureCards()" title="Sort references">
+          <option value="title">Sort: A–Z</option>
+          <option value="unread">Sort: Unread first</option>
+          <option value="read">Sort: Read first</option>
+        </select>
         <button id="lit-export-btn" onclick="exportBib()"
                 style="padding:7px 12px;background:none;border:1.5px solid var(--border);border-radius:8px;
                        font-size:12px;cursor:pointer;color:var(--text-muted);white-space:nowrap;margin-left:auto">
@@ -3413,9 +3427,15 @@ function renderLiteratureCards() {
   const projectNames = allSheets.map(s => s.name).filter(p => byProject[p]);
   Object.keys(byProject).forEach(p => { if (!projectNames.includes(p)) projectNames.push(p); });
 
-  const byModified = (a, b) => (b.modified || '').localeCompare(a.modified || '') || (b.row - a.row);
+  const sortMode = document.getElementById('l-sort')?.value || 'title';
+  const byTitle = (a, b) => (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' });
+  const sortFn = (a, b) => {
+    if (sortMode === 'unread') { const d = (a.read ? 1 : 0) - (b.read ? 1 : 0); if (d) return d; }
+    else if (sortMode === 'read') { const d = (b.read ? 1 : 0) - (a.read ? 1 : 0); if (d) return d; }
+    return byTitle(a, b);
+  };
   const cards = projectNames.map(project => {
-    const refs = byProject[project].slice().sort(byModified);
+    const refs = byProject[project].slice().sort(sortFn);
     const fd = FLOWER_DEFS[hashStr(project) % FLOWER_DEFS.length];
     const bloom = refs.map(() => ({ status: 'Completed' }));  // every petal blooms — one per reference
     const rows = refs.map(l => litRow(l)).join('');
@@ -3439,13 +3459,16 @@ function litRow(l) {
     ? `<a href="${escHtml(l.link)}" target="_blank" rel="noopener noreferrer">${escHtml(l.title)}</a>`
     : escHtml(l.title);
   const metaParts = [l.authors, l.year].filter(Boolean);
-  return `<tr class="task-row">
+  const readBtn = `<button class="lit-read-toggle" title="${l.read ? 'Read — click to mark unread' : 'Unread — click to mark read'}"
+      onclick="toggleRead(${l.row}, ${l.read ? 0 : 1})">${l.read ? '✅' : '⬜'}</button>`;
+  return `<tr class="task-row lit-row ${l.read ? 'read' : ''}">
     <td style="width:100%">
       <div class="lit-title">${titleHtml}</div>
       ${metaParts.length ? `<div class="task-meta">${escHtml(metaParts.join('  ·  '))}</div>` : ''}
       <div class="lit-note-panel" id="lit-note-${l.row}" hidden>${l.notes ? escHtml(l.notes) : 'No notes yet.'}</div>
     </td>
-    <td style="white-space:nowrap">
+    <td style="white-space:nowrap;vertical-align:top">
+      ${readBtn}
       <button class="icon-btn" title="Show notes" onclick="toggleLitNote(${l.row})">🗒</button>
       <button class="icon-btn" title="Edit" onclick="openLitModal(${l.row})">✏️</button>
       <button class="icon-btn" title="Delete" onclick="deleteLit(${l.row})">🗑</button>
@@ -3456,6 +3479,13 @@ function litRow(l) {
 function toggleLitNote(row) {
   const el = document.getElementById(`lit-note-${row}`);
   if (el) el.hidden = !el.hidden;
+}
+
+async function toggleRead(row, val) {
+  if (guardDemo()) return;
+  await fetch(`/api/literature/${row}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ read: !!val }) });
+  await loadLiterature(); refreshSyncStatus(); renderContent();
 }
 
 function openLitModal(row = null) {
@@ -3542,7 +3572,9 @@ function toBibEntry(l) {
 
 function exportBib() {
   const projectFilter = document.getElementById('l-filter-project')?.value || '';
-  const items = projectFilter ? allLiterature.filter(l => l.project === projectFilter) : allLiterature;
+  const items = (projectFilter ? allLiterature.filter(l => l.project === projectFilter) : allLiterature.slice())
+    .sort((a, b) => (a.project || '').localeCompare(b.project || '')
+                 || (a.title || '').localeCompare(b.title || '', undefined, { sensitivity: 'base' }));
   if (!items.length) { alert('No literature entries to export.'); return; }
   const bib = items.map(toBibEntry).join('\n\n');
   const a = document.createElement('a');
